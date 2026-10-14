@@ -279,7 +279,7 @@ jobs:
             echo '#include <iostream>'
             echo 'int main() {'
             for lib in $LIBS; do
-              echo "  std::cout << ndof::$lib::library_name() << ' ' << ndof::$lib::library_version() << '\n';"
+              echo "  std::cout << ndof::$lib::library_name() << ' ' << ndof::$lib::library_version() << std::endl;"
             done
             echo '  return 0;'
             echo '}'
