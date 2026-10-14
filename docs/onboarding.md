@@ -160,8 +160,8 @@ surface; review it like an API change.
 ## The CI gates, and how to reproduce each locally
 
 CI lives in `.github/workflows/ci.yml` and runs every gate over every library
-under `libs/`, in dependency order (the `LIBS` list there mirrors
-`scripts/build.sh`). Every push and pull request runs:
+under `libs/`, in dependency order (computed by `scripts/build.sh --list`
+from each conanfile's `requires`; there is no hand-kept list). Every push and pull request runs:
 
 | Job | Proves | Reproduce locally (in the container, from the repository root) |
 |---|---|---|

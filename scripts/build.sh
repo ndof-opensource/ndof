@@ -8,11 +8,13 @@
 #   --editable        live cross-library development (see below)
 #   --profile <p>     Conan profile: a name under /opt/conan/profiles or a path
 #   --clean           delete the target library's build/ first
+#   --list            print the libraries in build order, one per line, and exit
 #
-# Libraries build in dependency order (LIBS below; .github/workflows/ci.yml
-# mirrors it). scripts/lib-build.sh, run in a library's directory, does the
-# actual install, configure, build, and test with its guards; this script
-# only decides where a library's ndof dependencies come from:
+# Libraries are discovered from libs/*/conanfile.py and built in dependency
+# order, computed from the requires each conanfile declares (--list prints
+# it; CI uses that). scripts/lib-build.sh, run in a library's directory,
+# does the actual install, configure, build, and test with its guards; this
+# script only decides where a library's ndof dependencies come from:
 #
 #   default     mirrors CI. Every ndof dependency is packaged into the local
 #               Conan cache (conan create) before the target builds, so the
@@ -29,11 +31,55 @@
 set -euo pipefail
 
 # Repository root, derived from this script's location so the script works
-# from any current directory. LIBS is the build order: every library's ndof
-# dependencies must come before it in this list. .github/workflows/ci.yml
-# carries the same list.
+# from any current directory.
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-LIBS=(core callable error patterns)
+
+# direct_deps <library>: the ndof libraries named by self.requires(...) in
+# the library's conanfile.py, one per line. The conanfile is the single
+# source of truth for dependencies; nothing is declared twice here.
+direct_deps() {
+    grep -oE 'self\.requires\("ndof-[a-z]+/' "$ROOT/libs/$1/conanfile.py" 2>/dev/null \
+        | sed -E 's/.*ndof-([a-z]+)\//\1/' || true
+}
+
+# order_libs: every directory under libs/ that holds a conanfile.py, printed
+# in build order: each library after all of its ndof dependencies, ties
+# broken alphabetically so the order is stable. Walks the requires graph
+# depth first; a cycle, or a requires naming a library that is not under
+# libs/, is an error.
+order_libs() {
+    local -A state=()
+    local -a order=()
+    local l
+    visit() {
+        local lib=$1 d
+        case ${state[$lib]:-} in
+            done) return 0 ;;
+            active) echo "error: dependency cycle through libs/$lib" >&2; return 1 ;;
+        esac
+        state[$lib]=active
+        for d in $(direct_deps "$lib"); do
+            if [[ ! -f "$ROOT/libs/$d/conanfile.py" ]]; then
+                echo "error: libs/$lib requires ndof-$d, but there is no libs/$d/conanfile.py" >&2
+                return 1
+            fi
+            visit "$d" || return 1
+        done
+        state[$lib]=done
+        order+=("$lib")
+    }
+    for l in $(cd "$ROOT/libs" && for d in */; do [[ -f $d/conanfile.py ]] && echo "${d%/}"; done | sort); do
+        visit "$l" || return 1
+    done
+    printf '%s\n' "${order[@]}"
+}
+
+# LIBS is the computed build order. Everything below treats it as the
+# authoritative list of libraries.
+if ! ordered=$(order_libs); then
+    exit 1
+fi
+LIBS=($ordered)
 
 # Option parsing. Flags are recorded; anything else is a positional
 # argument (library name, then preset).
@@ -41,18 +87,26 @@ EDITABLE=0
 PROFILE_OPT=""
 CLEAN=0
 FROM=""
+LIST=0
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
     case $1 in
+        --list) LIST=1; shift ;;
         --editable) EDITABLE=1; shift ;;
         --profile) PROFILE_OPT=$2; shift 2 ;;
         --clean) CLEAN=1; shift ;;
         --from) FROM=$2; shift 2 ;;
-        -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
         -*) echo "error: unknown option $1" >&2; exit 2 ;;
         *) POSITIONAL+=("$1"); shift ;;
     esac
 done
+
+# --list: print the build order and stop, before any Conan or profile work.
+if [[ $LIST == 1 ]]; then
+    printf '%s\n' "${LIBS[@]}"
+    exit 0
+fi
 
 # --from <path>: This option allows you to pass a path to any file in the repo,
 # and this section will work out which library owns the path. This
@@ -125,14 +179,6 @@ fi
 if ! conan remote list | grep -q "^ndof-public:"; then
     conan remote add ndof-public https://conan.cloudsmith.io/ndof-opensource/packages/
 fi
-
-# direct_deps <library>: the ndof libraries named by self.requires(...) in
-# the library's conanfile.py, one per line. The conanfile is the single
-# source of truth for dependencies; nothing is declared twice here.
-direct_deps() {
-    grep -oE 'self\.requires\("ndof-[a-z]+/' "$ROOT/libs/$1/conanfile.py" 2>/dev/null \
-        | sed -E 's/.*ndof-([a-z]+)\//\1/' || true
-}
 
 # deps_of <library>: every ndof library the given one depends on, directly
 # or through another dependency, printed in LIBS order so they can be built
