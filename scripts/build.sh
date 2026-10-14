@@ -15,6 +15,10 @@
 #   --clean           delete the target library's build/ first
 #   --list            print the libraries in build order, one per line, and exit
 #
+# A library that fails to build does not stop the run: libraries that depend
+# on it are skipped, independent ones still build, a summary is printed at
+# the end, and the exit status is non-zero if anything failed or was skipped.
+#
 # Libraries are discovered from libs/*/conanfile.py and built in dependency
 # order, computed from the requires each conanfile declares (--list prints
 # it; CI uses that). scripts/lib-build.sh, run in a library's directory,
@@ -240,6 +244,27 @@ deps_of() {
     return 0
 }
 
+# Outcome tracking. A failing library does not stop the run: it is recorded
+# in FAILED, every library that depends on it (directly or through another
+# dependency) is recorded in SKIPPED instead of being attempted, independent
+# libraries still build, and the script exits non-zero at the end if
+# anything failed or was skipped. 
+BUILT=" "
+FAILED=" "
+SKIPPED=" "
+in_set() { [[ $1 == *" $2 "* ]]; }
+
+# blocked_by <library>: the failed or skipped ndof dependencies of a
+# library, if any.
+blocked_by() {
+    local d
+    for d in $(deps_of "$1"); do
+        if in_set "$FAILED" "$d" || in_set "$SKIPPED" "$d"; then
+            printf '%s ' "$d"
+        fi
+    done
+}
+
 # lib_build <library>: run scripts/lib-build.sh (conan install, configure,
 # build, test) in the library's directory, passing the preset and options
 # through. --clean applies only to the library that was asked for, not to
@@ -253,19 +278,56 @@ lib_build() {
     (cd "$ROOT/libs/$lib" && "$ROOT/scripts/lib-build.sh" "${args[@]}")
 }
 
+# try_build <library>: lib_build with the outcome recorded. A library whose
+# dependency failed or was skipped is skipped, not attempted; one already
+# attempted in this run is not attempted again.
+try_build() {
+    local lib=$1 blockers
+    if in_set "$BUILT" "$lib" || in_set "$FAILED" "$lib" || in_set "$SKIPPED" "$lib"; then
+        return 0
+    fi
+    blockers=$(blocked_by "$lib")
+    if [[ -n $blockers ]]; then
+        echo "==> libs/$lib: skipped, depends on failed or skipped: $blockers"
+        SKIPPED="$SKIPPED$lib "
+        return 0
+    fi
+    if lib_build "$lib"; then
+        BUILT="$BUILT$lib "
+    else
+        echo "==> libs/$lib: FAILED"
+        FAILED="$FAILED$lib "
+    fi
+}
+
 # ensure_created <library>: package the library into the local Conan cache
 # with conan create, so a dependent's conan install finds it there instead
 # of asking the remote. Tests are skipped because lib_build runs them when
 # the library itself is built. CREATED remembers what this run has already
 # packaged, so a dependency shared by several targets is created once.
-CREATED=()
+# A create failure is recorded in FAILED like a build failure, so the
+# libraries that need the package are skipped. A library that already failed
+# or was skipped is not created either.
+CREATED=" "
 ensure_created() {
-    local lib=$1
-    [[ " ${CREATED[*]:-} " == *" $lib "* ]] && return 0
+    local lib=$1 blockers
+    if in_set "$CREATED" "$lib" || in_set "$FAILED" "$lib" || in_set "$SKIPPED" "$lib"; then
+        return 0
+    fi
+    blockers=$(blocked_by "$lib")
+    if [[ -n $blockers ]]; then
+        echo "==> libs/$lib: skipped, depends on failed or skipped: $blockers"
+        SKIPPED="$SKIPPED$lib "
+        return 0
+    fi
     echo "==> libs/$lib: conan create into the local cache (tests skipped; its own build runs them)"
-    conan create "$ROOT/libs/$lib" --build=missing "${PROFILE_ARGS[@]}" \
-        -s build_type="$BUILD_TYPE" -c tools.build:skip_test=True
-    CREATED+=("$lib")
+    if conan create "$ROOT/libs/$lib" --build=missing "${PROFILE_ARGS[@]}" \
+        -s build_type="$BUILD_TYPE" -c tools.build:skip_test=True; then
+        CREATED="$CREATED$lib "
+    else
+        echo "==> libs/$lib: FAILED (conan create)"
+        FAILED="$FAILED$lib "
+    fi
 }
 
 # The list of libraries to build: all of them in LIBS order, or just the one
@@ -289,9 +351,9 @@ if [[ $EDITABLE == 1 ]]; then
     for t in "${TARGETS[@]}"; do
         for d in $(deps_of "$t"); do
             [[ " ${TARGETS[*]} " == *" $d "* && $TARGET == all ]] && continue
-            lib_build "$d"
+            try_build "$d"
         done
-        lib_build "$t"
+        try_build "$t"
     done
 # Remote mode: nothing from libs/ may satisfy a dependency. Drop editable
 # registrations and purge every ndof package from the local cache, so the
@@ -318,7 +380,7 @@ elif [[ $REMOTE == 1 ]]; then
         echo "remote mode: ndof dependencies come from ndof-public at the versions the requires name"
     fi
     for t in "${TARGETS[@]}"; do
-        lib_build "$t"
+        try_build "$t"
     done
 # Default mode: drop any ndof editable registrations left by an earlier
 # --editable run (a stale one would silently shadow the cache), package each
@@ -330,6 +392,14 @@ else
         for d in $(deps_of "$t"); do
             ensure_created "$d"
         done
-        lib_build "$t"
+        try_build "$t"
     done
+fi
+
+# Summary and exit status: non-zero if anything failed or was skipped, so
+# CI and callers see the whole picture rather than the first failure.
+echo
+echo "summary: built:${BUILT% } failed:${FAILED% } skipped:${SKIPPED% }"
+if [[ $FAILED != " " || $SKIPPED != " " ]]; then
+    exit 1
 fi
