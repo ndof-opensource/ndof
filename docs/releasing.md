@@ -77,8 +77,13 @@ package report).
 3. The `publish` workflow runs automatically: it resolves the library from
    the tag, verifies the tag matches that library's conanfile version,
    verifies its ndof dependencies are published, exports the recipe and
-   sources from the tagged commit (`conan export libs/<name>`), and
-   uploads them to `ndof-public`.
+   sources from the tagged commit (`conan export libs/<name>`), uploads
+   them to `ndof-public`, and then acts as a consumer: on a clean runner
+   with the runner's own compiler, a scratch project requires the
+   published version, Conan fetches and builds it from the remote and
+   runs its tests, and the scratch program links it and calls into it.
+   If that last step fails, the published version is unusable; versions
+   are immutable, so publish a corrected version.
 4. Verify from any dev container:
 
    ```sh

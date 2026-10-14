@@ -91,3 +91,54 @@ jobs:
         run: |
           conan remote login ndof-public "$CLOUDSMITH_USER" -p "$CLOUDSMITH_API_KEY"
           conan upload "ndof-$LIB" -r ndof-public --only-recipe --confirm
+      # Nothing before this point has used the published package. Clear the
+      # local cache so the copy exported above cannot satisfy anything, then
+      # do what a consumer does: a scratch project that requires the
+      # published version, installed with --build=missing. Conan resolves the
+      # recipe from the remotes (ndof packages exist only on ndof-public;
+      # gtest comes from ConanCenter), builds it with the runner's own
+      # compiler (GCC 13 on ubuntu-24.04, deliberately not the dev image's,
+      # so the documented GCC 13 floor is checked too), and runs the
+      # library's tests as part of that build. The scratch program then
+      # links the package and calls into it. A failure here means the
+      # published version is unusable: versions are immutable, so the fix is
+      # a corrected version, published the same way.
+      - name: Install, test, and use the published package as a consumer
+        env:
+          LIB: ${{ steps.tag.outputs.lib }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          conan remove "*" -c
+          conan profile detect --force
+          c=$RUNNER_TEMP/consumer
+          mkdir -p "$c"
+          {
+            echo '[requires]'
+            echo "ndof-$LIB/$VERSION"
+            echo '[generators]'
+            echo 'CMakeDeps'
+            echo 'CMakeToolchain'
+            echo '[layout]'
+            echo 'cmake_layout'
+          } > "$c/conanfile.txt"
+          {
+            echo 'cmake_minimum_required(VERSION 3.28)'
+            echo 'project(consumer LANGUAGES CXX)'
+            echo "find_package(ndof-$LIB REQUIRED CONFIG)"
+            echo 'add_executable(consumer main.cpp)'
+            echo 'target_compile_features(consumer PRIVATE cxx_std_23)'
+            echo "target_link_libraries(consumer PRIVATE ndof::$LIB)"
+          } > "$c/CMakeLists.txt"
+          {
+            echo "#include <ndof/$LIB/version.hpp>"
+            echo '#include <iostream>'
+            echo 'int main() {'
+            echo "  std::cout << ndof::$LIB::library_name() << ' ' << ndof::$LIB::library_version() << std::endl;"
+            echo '  return 0;'
+            echo '}'
+          } > "$c/main.cpp"
+          conan install "$c" --build=missing -s compiler.cppstd=23 -s build_type=Release
+          cmake -S "$c" -B "$c/build/Release" -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$c/build/Release/generators/conan_toolchain.cmake"
+          cmake --build "$c/build/Release"
+          "$c/build/Release/consumer"
