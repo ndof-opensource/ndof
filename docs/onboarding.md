@@ -30,8 +30,8 @@ request in ndof-infra followed by a one-line pin update here.
 
    Both scripts print every command they run. The root script packages the
    library's ndof dependencies into the local Conan cache (none, for core),
-   then runs the library's own `libs/core/scripts/build.sh debug`, which
-   wraps this raw sequence inside `libs/core/`:
+   then runs the shared `scripts/lib-build.sh debug` inside `libs/core/`,
+   which wraps this raw sequence:
 
    ```sh
    conan install . --build=missing -pr:a /opt/conan/profiles/linux-gcc14 -s build_type=Debug

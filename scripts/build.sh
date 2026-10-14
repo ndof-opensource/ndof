@@ -10,9 +10,9 @@
 #   --clean           delete the target library's build/ first
 #
 # Libraries build in dependency order (LIBS below; .github/workflows/ci.yml
-# mirrors it). Each library's own scripts/build.sh does the actual install,
-# configure, build, and test with its guards; this script only decides where
-# a library's ndof dependencies come from:
+# mirrors it). scripts/lib-build.sh, run in a library's directory, does the
+# actual install, configure, build, and test with its guards; this script
+# only decides where a library's ndof dependencies come from:
 #
 #   default     mirrors CI. Every ndof dependency is packaged into the local
 #               Conan cache (conan create) before the target builds, so the
@@ -101,8 +101,8 @@ esac
 # This section ensures ndof dependencies are built with the same Conan profile
 # that the dependent library is about to be built with. Conan requires that
 # a dependency be built with the same settings in order to be included for
-# the dependent package. The choice mirrors each library's
-# scripts/build.sh exactly (explicit --profile, else the image's gcc14
+# the dependent package. The choice mirrors
+# scripts/lib-build.sh exactly (explicit --profile, else the image's gcc14
 # profile, else Conan's detected default with C++23).
 PROFILE_ARGS=()
 if [[ -n $PROFILE_OPT ]]; then
@@ -157,8 +157,8 @@ deps_of() {
     return 0
 }
 
-# lib_build <library>: run the library's own scripts/build.sh (conan install,
-# configure, build, test) in its directory, passing the preset and options
+# lib_build <library>: run scripts/lib-build.sh (conan install, configure,
+# build, test) in the library's directory, passing the preset and options
 # through. --clean applies only to the library that was asked for, not to
 # its dependencies.
 lib_build() {
@@ -166,8 +166,8 @@ lib_build() {
     local -a args=("$PRESET")
     [[ -n $PROFILE_OPT ]] && args+=(--profile "$PROFILE_OPT")
     [[ $CLEAN == 1 && $lib == "$TARGET" ]] && args+=(--clean)
-    echo "==> libs/$lib: scripts/build.sh ${args[*]}"
-    (cd "$ROOT/libs/$lib" && scripts/build.sh "${args[@]}")
+    echo "==> libs/$lib: lib-build.sh ${args[*]}"
+    (cd "$ROOT/libs/$lib" && "$ROOT/scripts/lib-build.sh" "${args[@]}")
 }
 
 # ensure_created <library>: package the library into the local Conan cache
