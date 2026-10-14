@@ -125,8 +125,11 @@ if ! conan remote list | grep -q "^ndof-public:"; then
     run conan remote add ndof-public https://conan.cloudsmith.io/ndof-opensource/packages/
 fi
 
+# The ${arr[@]+"${arr[@]}"} form expands to nothing when the array is empty;
+# a plain "${arr[@]}" is an unbound-variable error under set -u on bash 3.2
+# (macOS's /bin/bash, which the macOS CI job uses).
 read -ra EXTRA_INSTALL_ARGS <<< "${NDOF_CONAN_INSTALL_ARGS:-}"
-run conan install . --build=missing "${PROFILE_ARGS[@]}" -s build_type=$BUILD_TYPE "${EXTRA_INSTALL_ARGS[@]}"
+run conan install . --build=missing "${PROFILE_ARGS[@]}" -s build_type=$BUILD_TYPE ${EXTRA_INSTALL_ARGS[@]+"${EXTRA_INSTALL_ARGS[@]}"}
 mkdir -p build
 echo "$PROFILE" > build/.last-profile
 
