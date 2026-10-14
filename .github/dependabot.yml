@@ -1,0 +1,13 @@
+# Keeps the commit-pinned third-party actions in .github/workflows fresh via
+# reviewed PRs, grouped so one PR carries a week's bumps. The dev image is
+# built and pinned in ndof-infra; its digest is adopted here by a one-line
+# change to .devcontainer/devcontainer.json, which Dependabot does not scan.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]

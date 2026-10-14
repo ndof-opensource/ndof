@@ -1,0 +1,33 @@
+{
+    "name": "ndof",
+    // Digest-pinned dev environment. This line is the only place the image
+    // digest lives: local editors start the container from it and CI's
+    // digest-sync job reads it from here. The image is built and published
+    // by ndof-infra (image/Dockerfile there); adopting a new one is a
+    // one-line change to this file. Dependabot does not scan this file.
+    "image": "ghcr.io/ndof-opensource/ndof-dev@sha256:bd2c567144c6966a846ad140aa649f27e619a71e601ca069bdc48bc4ddc86279",
+    "remoteUser": "dev",
+    // Spec default, stated explicitly because Linux hosts depend on it: at
+    // create time the tool rebuilds the image with dev's uid/gid remapped to
+    // the host user's, keeping the bind-mounted checkout writable. VS Code
+    // and the devcontainer CLI honor it; see docs/onboarding.md, "Common
+    // pitfalls", if a tool does not honor it, resulting in permissions errors.
+    "updateRemoteUserUID": true,
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "llvm-vs-code-extensions.vscode-clangd",
+                "ms-vscode.cmake-tools",
+                // Debugger (gdb) only
+                "ms-vscode.cpptools"
+            ],
+            "settings": {
+                "C_Cpp.intelliSenseEngine": "disabled",
+                // Do not auto-configure on folder open: a fresh clone has no
+                // Conan-generated toolchain file until scripts/build.sh runs,
+                // and the auto-configure would fail against it.
+                "cmake.configureOnOpen": false
+            }
+        }
+    }
+}

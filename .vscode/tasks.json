@@ -1,0 +1,46 @@
+// VS Code tasks: Cmd/Ctrl+Shift+B runs the default build task, which builds
+// the library that owns the file in the active editor. All tasks run
+// scripts/build.sh, the canonical wrapper with its guards.
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "build (debug, active library)",
+            "type": "shell",
+            "command": "scripts/build.sh --from \"${file}\" debug",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "build (release, active library)",
+            "type": "shell",
+            "command": "scripts/build.sh --from \"${file}\" release",
+            "group": "build",
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "build (asan, active library)",
+            "type": "shell",
+            "command": "scripts/build.sh --from \"${file}\" asan",
+            "group": "build",
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "build (tsan, active library)",
+            "type": "shell",
+            "command": "scripts/build.sh --from \"${file}\" tsan",
+            "group": "build",
+            "problemMatcher": ["$gcc"]
+        },
+        {
+            "label": "build (debug, all libraries)",
+            "type": "shell",
+            "command": "scripts/build.sh all debug",
+            "group": "build",
+            "problemMatcher": ["$gcc"]
+        }
+    ]
+}

@@ -1,0 +1,41 @@
+# One clangd configuration for the whole repository. Each library has its
+# own build tree (libs/<name>/build/Debug, written by scripts/build.sh).
+# clangd only looks *up* the directory path, not down, so it can't find
+# the appropriate compile_commands.json in this file structure. This
+# .clangd file matches the path of the given source file, then points
+# clangd to the appropriate location to find the needed compile_commands.json.
+# 
+# In order to exist at all, compile_commands.json requires one **debug**
+# build of the given library. This means clangd won't work correctly until
+# build.sh <library> debug has been run at least once.
+# 
+# Side note: The builds that get generated from sanitizer options (asan/tsan)
+# are effectively identical to the Debug build *for the purposes of clangd
+# highlighting and editor tools*, so we only need to point clangd at the Debug
+# compile_commands.json.
+If:
+  PathMatch: libs/core/.*
+CompileFlags:
+  CompilationDatabase: libs/core/build/Debug
+---
+If:
+  PathMatch: libs/callable/.*
+CompileFlags:
+  CompilationDatabase: libs/callable/build/Debug
+---
+If:
+  PathMatch: libs/error/.*
+CompileFlags:
+  CompilationDatabase: libs/error/build/Debug
+---
+If:
+  PathMatch: libs/patterns/.*
+CompileFlags:
+  CompilationDatabase: libs/patterns/build/Debug
+---
+# A brand-new header that no compiled .cpp includes yet has no 
+# compile_commands.json, and clangd's fallback parses it as C++17. Force the project
+# standard so such headers get the right language mode. Must track the
+# project standard (currently C++23, decision 4).
+CompileFlags:
+  Add: [-std=c++23]

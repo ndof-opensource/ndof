@@ -1,0 +1,93 @@
+# Publishes one library's Conan recipe to the public ndof remote when its
+# version tag is pushed. Tags name the library: core/v0.1.2 publishes
+# libs/core at version 0.1.2. Nothing is built here because every commit on main
+# already passed the CI package job and associated tests, which also runs conan create for every
+# library in the pinned dev image, so this workflow needs only Conan itself
+# and runs on a plain runner.
+#
+# Publishing is tag-driven so every published version is immutable:
+# re-publishing requires a conanfile version bump and a new tag, and the
+# guards below keep tag and conanfile honest and refuse to publish a
+# library whose ndof dependencies are not themselves published yet (a
+# consumer could not resolve it). Immutability of each version is enforced
+# with GitHub rules preventing deleting or force-moving of any */v* tag.
+#
+# This publishing process only publishes a single library at a time, enforced
+# by the conan upload pattern "ndof-$LIB".
+
+name: publish
+
+on:
+  push:
+    tags: ["*/v*"]
+
+env:
+  # Keep in sync with the dev image (ndof-infra, image/Dockerfile).
+  CONAN_VERSION: 2.9.2
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Resolve the library and version from the tag
+        id: tag
+        run: |
+          lib=${GITHUB_REF_NAME%%/v*}
+          version=${GITHUB_REF_NAME#*/v}
+          if [[ ! -f "libs/$lib/conanfile.py" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME names no library: libs/$lib/conanfile.py does not exist"
+            exit 1
+          fi
+          echo "lib=$lib" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Verify tag matches conanfile version
+        env:
+          LIB: ${{ steps.tag.outputs.lib }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          actual=$(python3 -c "import re; print(re.search(r'version\s*=\s*\"([^\"]+)\"', open('libs/$LIB/conanfile.py').read()).group(1))")
+          if [[ "$actual" != "$VERSION" ]]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match libs/$LIB/conanfile.py version $actual; bump the conanfile and re-tag"
+            exit 1
+          fi
+      - name: Install Conan
+        # Into a venv on the PATH, like the CI native jobs; GITHUB_PATH takes
+        # effect from the next step.
+        run: |
+          python3 -m venv "$HOME/toolchain"
+          "$HOME/toolchain/bin/pip" install "conan==$CONAN_VERSION"
+          echo "$HOME/toolchain/bin" >> "$GITHUB_PATH"
+      - name: Add the public remote
+        run: conan remote add ndof-public https://conan.cloudsmith.io/ndof-opensource/packages/ --force
+      - name: Verify every ndof dependency is already published
+        env:
+          LIB: ${{ steps.tag.outputs.lib }}
+        # build.sh builds a library and all its dependencies into the local
+        # cache, so a dependency missing on the remote will result in the
+        # dependent library publishing fine, but then failing for any Conan
+        # consumer who tries to use it. This test ensures the required dependencies and
+        # versions exist on the remote before publishing the dependent library.
+        run: |
+          refs=$(grep -oE 'requires\("ndof-[a-z0-9-]+/[^"]+"\)' "libs/$LIB/conanfile.py" | sed -E 's/.*\("([^"]+)"\).*/\1/' || true)
+          for ref in $refs; do
+            found=$(conan list "$ref" -r ndof-public --format=json 2>/dev/null \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); print(any(isinstance(v, dict) and v and "error" not in v for v in d.values()))')
+            if [[ "$found" != "True" ]]; then
+              echo "::error::libs/$LIB requires $ref, which is not published on ndof-public; release the dependency first"
+              exit 1
+            fi
+            echo "ok: $ref is published"
+          done
+      - name: Export recipe and sources
+        env:
+          LIB: ${{ steps.tag.outputs.lib }}
+        run: conan export "libs/$LIB"
+      - name: Upload to the public remote
+        env:
+          LIB: ${{ steps.tag.outputs.lib }}
+          CLOUDSMITH_USER: ${{ secrets.CLOUDSMITH_USER }}
+          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+        run: |
+          conan remote login ndof-public "$CLOUDSMITH_USER" -p "$CLOUDSMITH_API_KEY"
+          conan upload "ndof-$LIB" -r ndof-public --only-recipe --confirm

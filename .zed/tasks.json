@@ -1,0 +1,40 @@
+// Zed project tasks: run from the task picker (`task: spawn`), or bind one
+// to a key in your personal keymap (~/.config/zed/keymap.json), e.g.:
+//   { "context": "Workspace",
+//     "bindings": { "cmd-b": ["task::Spawn", { "task_name": "build (debug, active library)" }] } }
+// The "active library" tasks build the library that owns the file in the
+// active editor. All tasks run scripts/build.sh, the canonical wrapper with
+// its guards, so a shortcut build can never run against a stale or
+// misconfigured tree.
+[
+    {
+        "label": "build (debug, active library)",
+        "command": "scripts/build.sh",
+        "args": ["--from", "$ZED_FILE", "debug"],
+        "reveal": "always"
+    },
+    {
+        "label": "build (release, active library)",
+        "command": "scripts/build.sh",
+        "args": ["--from", "$ZED_FILE", "release"],
+        "reveal": "always"
+    },
+    {
+        "label": "build (asan, active library)",
+        "command": "scripts/build.sh",
+        "args": ["--from", "$ZED_FILE", "asan"],
+        "reveal": "always"
+    },
+    {
+        "label": "build (tsan, active library)",
+        "command": "scripts/build.sh",
+        "args": ["--from", "$ZED_FILE", "tsan"],
+        "reveal": "always"
+    },
+    {
+        "label": "build (debug, all libraries)",
+        "command": "scripts/build.sh",
+        "args": ["all", "debug"],
+        "reveal": "always"
+    }
+]

@@ -1,0 +1,342 @@
+# CI for the ndof libraries. Every library under libs/ is built, tested,
+# analyzed, and packaged on every push to main and every pull request.
+#
+# Jobs process the libraries in dependency order (LIBS below; scripts/
+# build.sh mirrors it). The Linux build jobs run scripts/build.sh in its
+# default mode, which packages each ndof dependency into the runner's Conan
+# cache before a dependent builds, so a library is always tested against
+# the packaged form of its dependencies. The Linux jobs run inside the dev image pinned in
+# .devcontainer/devcontainer.json (digest-sync reads it, so CI and the
+# editor both use the same container image); macOS and Windows run on native runners
+# with pinned tools and are the portability enforcers.
+#
+# Container jobs run with --user root: the runner's work directories belong
+# to the host runner user, which the image's non-root dev user cannot write.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  LIBS: core callable error patterns
+  # Tool versions for the native macOS/Windows jobs. Keep in sync with the
+  # dev image (ndof-infra, image/Dockerfile).
+  CONAN_VERSION: 2.9.2
+  CMAKE_VERSION: 3.30.5
+  NINJA_VERSION: 1.11.1.1
+
+jobs:
+  digest-sync:
+    runs-on: ubuntu-24.04
+    outputs:
+      image: ${{ steps.read.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Read the image pin from devcontainer.json
+        id: read
+        # devcontainer.json is JSONC (comments allowed), so extract with sed
+        # rather than a strict JSON parser.
+        run: |
+          devc_image=$(sed -n 's/^[[:space:]]*"image":[[:space:]]*"\([^"]*\)".*/\1/p' .devcontainer/devcontainer.json | head -n 1)
+          if [[ -z "$devc_image" ]]; then
+            echo '::error file=.devcontainer/devcontainer.json::no "image" entry found; the dev environment is pinned here'
+            exit 1
+          fi
+          echo "image=$devc_image" >> "$GITHUB_OUTPUT"
+          echo "environment: $devc_image"
+
+  format:
+    needs: digest-sync
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.digest-sync.outputs.image }}
+      options: --user root
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # fetch-depth: 0 fetches the full history, including tags and branches,
+          # which are needed by the versioning checks.
+          fetch-depth: 0
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: clang-format
+        run: git ls-files '*.cpp' '*.hpp' | xargs -r clang-format --dry-run -Werror
+      # The shipped implementation tier is spelled details/ (decision 14 in
+      # docs/decisions.md). Sibling conventions from other projects (detail/,
+      # internal/) and case variants are rejected programmatically, so a
+      # mistyped directory fails CI instead of waiting for review to notice.
+      - name: Header layout naming (decision 14)
+        run: |
+          bad=$(find libs/*/include -type d \( -iname detail -o -iname internal -o \( -iname details ! -name details \) \) 2>/dev/null || true)
+          if [[ -n "$bad" ]]; then
+            echo "::error::wrong implementation-tier directory name(s): $bad. Use details/ (decision 14)."
+            exit 1
+          fi
+      # Every header opens with a named include guard, NDOF_<LIB>_<FILE>_HPP
+      # (the team standard; #pragma once is not used). Checked by name to
+      # ensure all guard names are consistent, and so a guard copied from
+      # one header to another doesn't collide, preventing inclusion of the
+      # second header that uses the same guard name.
+      - name: Header include guards
+        run: |
+          fail=0
+          for f in $(git ls-files 'libs/*/include/ndof/*/*.hpp' 'libs/*/include/ndof/*/**/*.hpp'); do
+            rel=${f#libs/*/include/ndof/}
+            want="NDOF_$(echo "${rel%.hpp}" | tr '/a-z' '_A-Z')_HPP"
+            if ! grep -qxF "#ifndef $want" "$f" || ! grep -qxF "#define $want" "$f"; then
+              echo "::error file=$f::expected include guard $want (#ifndef/#define) at the top"
+              fail=1
+            fi
+          done
+          exit $fail
+      # This task enforces two rules.
+      # (1) A requires on another ndof library must name the
+      # same version as in that other library's conanfile.
+      # (2) A PR that changes a library's packaged files (CMakeLists.txt,
+      # CMakePresets.json, cmake/, include/, src/, tests/, conanfile.py)
+      # while its version still equals its latest release tag must also
+      # bump the version. README changes do not count.
+      - name: Versions and requires track the tree (decision 18)
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          version_of() {
+            python3 -c "import re,sys; print(re.search(r'version\s*=\s*\"([^\"]+)\"', open(sys.argv[1]).read()).group(1))" "libs/$1/conanfile.py"
+          }
+          fail=0
+          for lib in $LIBS; do
+            v=$(version_of "$lib")
+            for ref in $(grep -oE 'requires\("ndof-[a-z0-9-]+/[^"]+"\)' "libs/$lib/conanfile.py" | sed -E 's/.*\("([^"]+)"\).*/\1/' || true); do
+              dep=${ref#ndof-}; dep=${dep%%/*}; want=${ref#*/}
+              if [[ ! -f "libs/$dep/conanfile.py" ]]; then
+                echo "::error file=libs/$lib/conanfile.py::requires $ref, but there is no libs/$dep"
+                fail=1; continue
+              fi
+              have=$(version_of "$dep")
+              if [[ "$want" != "$have" ]]; then
+                echo "::error file=libs/$lib/conanfile.py::requires $ref, but libs/$dep is at $have; a requires names the in-tree version"
+                fail=1
+              fi
+            done
+            latest=$(git tag -l "$lib/v*" | sed "s|^$lib/v||" | sort -V | tail -n 1)
+            [[ -z "$latest" ]] && continue
+            if [[ "$(printf '%s\n%s\n' "$latest" "$v" | sort -V | tail -n 1)" != "$v" ]]; then
+              echo "::error file=libs/$lib/conanfile.py::version $v is behind the latest release $lib/v$latest"
+              fail=1; continue
+            fi
+            [[ -z "$BASE_REF" ]] && continue
+            if [[ "$v" == "$latest" ]]; then
+              changed=$(git diff --name-only "origin/$BASE_REF...HEAD" -- \
+                "libs/$lib/CMakeLists.txt" "libs/$lib/CMakePresets.json" "libs/$lib/cmake" \
+                "libs/$lib/include" "libs/$lib/src" "libs/$lib/tests" "libs/$lib/conanfile.py")
+              if [[ -n "$changed" ]]; then
+                echo "::error file=libs/$lib/conanfile.py::libs/$lib changed but its version $v equals the latest release $lib/v$latest; bump it in this PR"
+                fail=1
+              fi
+            fi
+          done
+          exit $fail
+
+  linux:
+    needs: digest-sync
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.digest-sync.outputs.image }}
+      options: --user root
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [linux-gcc14, linux-clang19]
+        build_type: [Debug, Release]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Build and test every library (dependencies from the cache)
+        run: scripts/build.sh all ${{ matrix.build_type == 'Debug' && 'debug' || 'release' }} --profile ${{ matrix.profile }}
+
+  sanitize:
+    name: ASan + UBSan
+    needs: digest-sync
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.digest-sync.outputs.image }}
+      options: --user root
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: scripts/build.sh all asan --profile linux-clang19
+
+  tidy:
+    name: clang-tidy
+    needs: digest-sync
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.digest-sync.outputs.image }}
+      options: --user root
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: scripts/build.sh all debug --profile linux-clang19
+      - name: run-clang-tidy over every library's compile_commands.json
+        run: |
+          for lib in $LIBS; do
+            echo "==> libs/$lib"
+            run-clang-tidy -p "libs/$lib/build/Debug" -warnings-as-errors='*' -quiet
+          done
+
+  cppcheck:
+    needs: digest-sync
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.digest-sync.outputs.image }}
+      options: --user root
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: scripts/build.sh all debug --profile linux-clang19
+      # Second static analyzer alongside clang-tidy: different engine,
+      # different defect classes. Driven by each compile_commands.json so it
+      # analyzes exactly the translation units CMake compiles.
+      # --library=googletest teaches cppcheck gtest's TEST() macros; without
+      # it the test files are unparseable (syntaxError).
+      - name: cppcheck over every library's compile_commands.json
+        run: |
+          for lib in $LIBS; do
+            echo "==> libs/$lib"
+            cppcheck --project="libs/$lib/build/Debug/compile_commands.json" \
+              --library=googletest \
+              --enable=warning,style,performance,portability \
+              --error-exitcode=1 --quiet
+          done
+
+  package:
+    needs: digest-sync
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.digest-sync.outputs.image }}
+      options: --user root
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Add ndof public Conan remote
+        run: conan remote add ndof-public https://conan.cloudsmith.io/ndof-opensource/packages/ --force
+      # The one gate that exercises each Conan recipe end to end: export the
+      # sources, build, run the tests, and package via cmake --install. In
+      # dependency order, so a dependent packages against the just-packaged
+      # form of its dependencies. This is what publishing relies on.
+      - name: conan create every library in dependency order
+        run: |
+          for lib in $LIBS; do
+            echo "==> libs/$lib"
+            conan create "libs/$lib" --build=missing -pr:a /opt/conan/profiles/linux-gcc14 -s build_type=Release
+          done
+
+  plain-cmake:
+    needs: digest-sync
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.digest-sync.outputs.image }}
+      options: --user root
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Decision 6: every library is consumable with plain CMake and no
+      # package manager. No other gate takes that path (the package job goes
+      # through Conan's generated configs), so a broken installed package
+      # config would otherwise ship unnoticed. Install every library into one
+      # prefix in dependency order, so a dependent's find_package resolves
+      # the dependency the way a consumer's would.
+      - name: Install every library to a prefix with plain CMake
+        run: |
+          prefix=$RUNNER_TEMP/ndof-prefix
+          for lib in $LIBS; do
+            echo "==> libs/$lib"
+            cmake -S "libs/$lib" -B "$RUNNER_TEMP/build-$lib" -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release -DNDOF_BUILD_TESTS=OFF \
+              -DCMAKE_PREFIX_PATH="$prefix"
+            cmake --build "$RUNNER_TEMP/build-$lib"
+            cmake --install "$RUNNER_TEMP/build-$lib" --prefix "$prefix"
+          done
+      # A scratch consumer that find_package()s every library from the prefix
+      # and calls into each, built with nothing but CMake and the prefix.
+      - name: Build and run a scratch consumer against the prefix
+        run: |
+          prefix=$RUNNER_TEMP/ndof-prefix
+          c=$RUNNER_TEMP/consumer
+          mkdir -p "$c"
+          {
+            echo 'cmake_minimum_required(VERSION 3.28)'
+            echo 'project(consumer LANGUAGES CXX)'
+            echo 'add_executable(consumer main.cpp)'
+            echo 'target_compile_features(consumer PRIVATE cxx_std_23)'
+            for lib in $LIBS; do
+              echo "find_package(ndof-$lib REQUIRED CONFIG)"
+              echo "target_link_libraries(consumer PRIVATE ndof::$lib)"
+            done
+          } > "$c/CMakeLists.txt"
+          {
+            for lib in $LIBS; do echo "#include <ndof/$lib/version.hpp>"; done
+            echo '#include <iostream>'
+            echo 'int main() {'
+            for lib in $LIBS; do
+              echo "  std::cout << ndof::$lib::library_name() << ' ' << ndof::$lib::library_version() << '\n';"
+            done
+            echo '  return 0;'
+            echo '}'
+          } > "$c/main.cpp"
+          cmake -S "$c" -B "$c/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$prefix"
+          cmake --build "$c/build"
+          "$c/build/consumer"
+
+  macos:
+    runs-on: macos-14 # arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned tools
+        # Into a venv on the PATH, mirroring the dev image's /opt/toolchain;
+        # GITHUB_PATH takes effect from the next step onward.
+        run: |
+          python3 -m venv "$HOME/toolchain"
+          "$HOME/toolchain/bin/pip" install "conan==$CONAN_VERSION" "cmake==$CMAKE_VERSION" "ninja==$NINJA_VERSION"
+          echo "$HOME/toolchain/bin" >> "$GITHUB_PATH"
+      - run: conan profile detect --force
+      - run: scripts/build.sh all release
+
+  windows:
+    runs-on: windows-2022 # MSVC
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned tools
+        # Into a venv on the PATH, matching the macOS job; on Windows the
+        # venv's executables live in Scripts, not bin.
+        run: |
+          python -m venv "$env:USERPROFILE\toolchain"
+          & "$env:USERPROFILE\toolchain\Scripts\pip.exe" install "conan==$env:CONAN_VERSION" "cmake==$env:CMAKE_VERSION" "ninja==$env:NINJA_VERSION"
+          Add-Content -Path $env:GITHUB_PATH -Value "$env:USERPROFILE\toolchain\Scripts"
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+      - run: conan profile detect --force
+      - name: Add ndof public Conan remote
+        run: conan remote add ndof-public https://conan.cloudsmith.io/ndof-opensource/packages/ --force
+      # Force the Ninja generator: Conan's detected MSVC default is a
+      # multi-config generator, whose cmake_layout writes build/generators;
+      # our presets expect the single-config layout (build/<Type>/generators)
+      # used on every other platform. Each library is built and tested in
+      # place, then packaged into the cache for the libraries after it.
+      - name: Build, test, and package every library in dependency order
+        run: |
+          $conf = "-c", "tools.cmake.cmaketoolchain:generator=Ninja"
+          foreach ($lib in $env:LIBS.Split(" ")) {
+            Write-Host "==> libs/$lib"
+            Push-Location "libs/$lib"
+            conan install . --build=missing -s build_type=Release -s compiler.cppstd=23 @conf
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            cmake --preset release
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            cmake --build --preset release
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            ctest --preset release
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            Pop-Location
+            conan create "libs/$lib" --build=missing -s build_type=Release -s compiler.cppstd=23 -c tools.build:skip_test=True @conf
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
