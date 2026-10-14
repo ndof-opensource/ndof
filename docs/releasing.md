@@ -209,8 +209,7 @@ editable mode.
 This section describes two ways to work on multiple ndof libraries
 simultaneously. As an example, if you were
 working on `ndof-error` and realized you needed to make associated
-changes to its dependency `ndof-core`, do one of these two
-procedures. 
+changes to its dependency `ndof-core`, do one of these procedures. 
 
 ### 1. Default build
 
@@ -246,6 +245,35 @@ scripts/build.sh run without --editable removes those registrations
 and returns to the packaged copy, so there is no cleanup step. The
 registrations and the Conan cache live in the container, so a container
 rebuild resets them too. CI never uses editable mode.
+
+### 3. Against the published packages
+
+The two modes above both build the dependency from this checkout. To
+build a library against the version of its dependency that consumers
+actually get, use `--remote`:
+
+```sh
+scripts/build.sh --remote error debug
+```
+
+Nothing is packaged from `libs/`: every ndof package is removed from the
+local Conan cache first, and error's `conan install` downloads
+`ndof-core` from `ndof-public` at the version error's `requires` names,
+which must therefore be published. To try a different published
+version without editing a conanfile:
+
+```sh
+scripts/build.sh --remote --override core=0.1.0 error debug
+```
+
+The override is applied through a temporary Conan profile with a
+`[replace_requires]` entry, so it affects the whole dependency graph of
+that build and nothing on disk. Any later build in default or editable
+mode repackages from `libs/` as usual.
+
+`--editable` is incompatible with `--remote` and will error. `--override`
+is not allowed without `--remote` and will error. A malformed `--override`
+will also error.
 
 One asymmetry to keep in mind: editable mode bypasses the recipe's
 `package()` step entirely, serving headers straight from the

@@ -6,6 +6,11 @@
 #   <library>         a directory name under libs/
 #   --from <path>     the library owning <path> (editors pass the open file)
 #   --editable        live cross-library development (see below)
+#   --remote          build against the published ndof packages (see below)
+#   --override <lib>=<version>
+#                     with --remote: use this published version of <lib>
+#                     instead of the one the target's requires names
+#                     (repeatable)
 #   --profile <p>     Conan profile: a name under /opt/conan/profiles or a path
 #   --clean           delete the target library's build/ first
 #   --list            print the libraries in build order, one per line, and exit
@@ -28,6 +33,15 @@
 #               included: rebuild the dependent). Never used by CI: the
 #               package gate (conan create) is what proves the packaged
 #               form still works.
+#   --remote    the opposite of both: nothing is packaged from libs/. Every
+#               ndof package is purged from the local cache and the target's
+#               ndof dependencies are downloaded from ndof-public and built,
+#               exactly as an outside consumer gets them. The version is the
+#               one the target's requires names, which must be published;
+#               --override <lib>=<version> substitutes any published version
+#               (via a Conan profile with [replace_requires]), so a dependent
+#               can be tried against an older release without editing a
+#               conanfile.
 set -euo pipefail
 
 # Repository root, derived from this script's location so the script works
@@ -84,6 +98,8 @@ LIBS=($ordered)
 # Option parsing. Flags are recorded; anything else is a positional
 # argument (library name, then preset).
 EDITABLE=0
+REMOTE=0
+OVERRIDES=()
 PROFILE_OPT=""
 CLEAN=0
 FROM=""
@@ -93,10 +109,12 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --list) LIST=1; shift ;;
         --editable) EDITABLE=1; shift ;;
+        --remote) REMOTE=1; shift ;;
+        --override) OVERRIDES+=("$2"); shift 2 ;;
         --profile) PROFILE_OPT=$2; shift 2 ;;
         --clean) CLEAN=1; shift ;;
         --from) FROM=$2; shift 2 ;;
-        -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,44p' "$0"; exit 0 ;;
         -*) echo "error: unknown option $1" >&2; exit 2 ;;
         *) POSITIONAL+=("$1"); shift ;;
     esac
@@ -107,6 +125,24 @@ if [[ $LIST == 1 ]]; then
     printf '%s\n' "${LIBS[@]}"
     exit 0
 fi
+
+# The three modes are exclusive, and overrides only mean something when the
+# dependencies come from the remote.
+if [[ $EDITABLE == 1 && $REMOTE == 1 ]]; then
+    echo "error: --editable and --remote are exclusive" >&2
+    exit 2
+fi
+if [[ ${#OVERRIDES[@]} -gt 0 && $REMOTE == 0 ]]; then
+    echo "error: --override requires --remote" >&2
+    exit 2
+fi
+for o in "${OVERRIDES[@]:-}"; do
+    [[ -z $o ]] && continue
+    if [[ $o != *=* ]]; then
+        echo "error: --override expects <lib>=<version>, got '$o'" >&2
+        exit 2
+    fi
+done
 
 # --from <path>: This option allows you to pass a path to any file in the repo,
 # and this section will work out which library owns the path. This
@@ -254,6 +290,33 @@ if [[ $EDITABLE == 1 ]]; then
             [[ " ${TARGETS[*]} " == *" $d "* && $TARGET == all ]] && continue
             lib_build "$d"
         done
+        lib_build "$t"
+    done
+# Remote mode: nothing from libs/ may satisfy a dependency. Drop editable
+# registrations and purge every ndof package from the local cache, so the
+# target's conan install has to download its ndof dependencies from
+# ndof-public, at the versions its requires names. Overrides are applied
+# through a temporary Conan profile with a [replace_requires] section,
+# which swaps the required reference for the requested published version
+# across the whole dependency graph without touching any conanfile.
+elif [[ $REMOTE == 1 ]]; then
+    conan editable remove --refs "ndof-*" >/dev/null 2>&1 || true
+    conan remove "ndof-*" -c >/dev/null 2>&1 || true
+    export NDOF_CONAN_INSTALL_ARGS=""
+    if [[ ${#OVERRIDES[@]} -gt 0 ]]; then
+        override_profile=$(mktemp)
+        {
+            echo "[replace_requires]"
+            for o in "${OVERRIDES[@]}"; do
+                echo "ndof-${o%%=*}/*: ndof-${o%%=*}/${o#*=}"
+            done
+        } > "$override_profile"
+        export NDOF_CONAN_INSTALL_ARGS="-pr:a $override_profile"
+        echo "remote mode: ndof dependencies come from ndof-public; overrides: ${OVERRIDES[*]}"
+    else
+        echo "remote mode: ndof dependencies come from ndof-public at the versions the requires name"
+    fi
+    for t in "${TARGETS[@]}"; do
         lib_build "$t"
     done
 # Default mode: drop any ndof editable registrations left by an earlier

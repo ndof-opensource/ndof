@@ -11,6 +11,9 @@
 #   asan, tsan                 sanitizer builds (reuse the Debug dependency install)
 #   --clean                    delete build/ first
 #   --profile <p>              Conan profile: a name under /opt/conan/profiles
+#   NDOF_CONAN_INSTALL_ARGS    environment variable; extra arguments appended
+#                              to the conan install command (the root
+#                              scripts/build.sh uses it for --remote)
 #                              (inside the dev container) or a path. Outside the
 #                              container, defaults to Conan's detected profile.
 #
@@ -122,7 +125,8 @@ if ! conan remote list | grep -q "^ndof-public:"; then
     run conan remote add ndof-public https://conan.cloudsmith.io/ndof-opensource/packages/
 fi
 
-run conan install . --build=missing "${PROFILE_ARGS[@]}" -s build_type=$BUILD_TYPE
+read -ra EXTRA_INSTALL_ARGS <<< "${NDOF_CONAN_INSTALL_ARGS:-}"
+run conan install . --build=missing "${PROFILE_ARGS[@]}" -s build_type=$BUILD_TYPE "${EXTRA_INSTALL_ARGS[@]}"
 mkdir -p build
 echo "$PROFILE" > build/.last-profile
 
