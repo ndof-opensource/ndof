@@ -31,6 +31,9 @@ class Package(ConanFile):
     def layout(self):
         cmake_layout(self)
 
+    def requirements(self):
+        self.requires("ndof-core/0.1.1")
+
     def build_requirements(self):
         self.test_requires("gtest/1.15.0")
 

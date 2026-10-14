@@ -1,6 +1,8 @@
 find_package(GTest REQUIRED CONFIG)
 
 add_executable(unit_tests
+    allocate_unique_test.cpp
+    object_test.cpp
     strings_test.cpp
     version_test.cpp)
 

@@ -1,0 +1,19 @@
+The Rule: You must always call .reserve(N) immediately after constructing a vector or string 
+    to pre-allocate the exact maximum capacity you need.
+
+Quick Reference Table for Stack/Safety-Critical STL
+---------------------------------------------------
+std::array        Perfect-- Pure stack based, zero allocators needed, NASA compliant.
+std::span (C++20) Perfect-- Non-owning view of contiguous memory. Zero allocations.
+std::string_view  Perfect-- Non-owning, immutable view. Zero allocations.
+
+std::pmr::vector Conditional-- Safe only if you call .reserve() up front.
+std::pmr::string Conditional-- Safe only if you call .reserve() up front.
+
+std::list / std::deque Avoid-- Extreme node allocation overhead; destroys monotonic buffers.
+std::shared_ptr        Avoid-- Control block allocation; extreme risk of dangling allocator pointers.
+std::stringstream      Avoid-- Ignores custom allocators; forces hidden global heap usage.
+
+Ancient NASA C++ guidelines:
+----------------------------
+https://ntrs.nasa.gov/api/citations/20080039927/downloads/20080039927.pdf

@@ -2,6 +2,8 @@
 
 Design-by-contract and error-handling framework for the ndof framework family
 
+Depends on `ndof-core`; see [its README](../core/README.md) to consume it.
+
 Part of the ndof framework family. Requires C++23 (GCC 13+, Clang 17+, MSVC 19.36+).
 
 Licensed under the [Apache License 2.0](../../LICENSE).

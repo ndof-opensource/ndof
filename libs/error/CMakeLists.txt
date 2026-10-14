@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.28)
 
 # Conan generates the toolchain file this project is configured with. When a
 # tool (an IDE's CMake integration, a bare cmake invocation) configures an
-# unbootstrapped tree, fail with the fix instead of cryptic errors.
+# unbootstrapped tree, fail with the fix instead of three cryptic errors.
 if(CMAKE_TOOLCHAIN_FILE AND NOT EXISTS "${CMAKE_TOOLCHAIN_FILE}")
     message(FATAL_ERROR
         "Conan has not generated ${CMAKE_TOOLCHAIN_FILE} yet. Run "
@@ -18,6 +18,11 @@ project(ndof-error
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
+include(CheckCXXSourceCompiles)
+
+if(NOT TARGET ndof::core)
+    find_package(ndof-core REQUIRED CONFIG)
+endif()
 
 # This project does not currently use C++20 modules;
 # CMake 3.28+ module scanning also injects compiler flags that
@@ -30,8 +35,29 @@ option(NDOF_BUILD_TESTS "Build unit tests" ${PROJECT_IS_TOP_LEVEL})
 # compiler's warnings; the team's CMake presets and CI turn it ON.
 option(NDOF_WERROR "Treat compiler warnings as errors" OFF)
 
+check_cxx_source_compiles(
+    "
+    #include <typeinfo>
+    struct Base { virtual ~Base() = default; };
+    struct Derived final : Base {};
+    int main() {
+        Base* b = new Derived();
+        auto* d = dynamic_cast<Derived*>(b);
+        delete b;
+        return d == nullptr;
+    }
+    "
+    NDOF_HAS_RTTI)
+
+if(NDOF_HAS_RTTI)
+    set(NDOF_RTTI_ENABLED_VALUE 1)
+else()
+    set(NDOF_RTTI_ENABLED_VALUE 0)
+endif()
+
 add_library(error
-    src/version.cpp)
+    src/version.cpp
+    include/ndof/error/error.hpp)
 add_library(ndof::error ALIAS error)
 
 set_target_properties(error PROPERTIES
@@ -39,13 +65,21 @@ set_target_properties(error PROPERTIES
 
 target_compile_features(error PUBLIC cxx_std_23)
 
+target_link_libraries(error PUBLIC ndof::core)
+
 target_include_directories(error PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
+target_compile_definitions(error PUBLIC
+    NDOF_RTTI_ENABLED=${NDOF_RTTI_ENABLED_VALUE})
+
 target_compile_definitions(error PRIVATE
     NDOF_LIBRARY_NAME="ndof-error"
-    NDOF_LIBRARY_VERSION="${PROJECT_VERSION}")
+    NDOF_LIBRARY_VERSION="${PROJECT_VERSION}"
+    $<$<CONFIG:Debug>:NDOF_BUILD_MODE_VALUE=\"debug\">
+    $<$<CONFIG:Release>:NDOF_BUILD_MODE_VALUE=\"release\">
+    $<$<NOT:$<OR:$<CONFIG:Debug>,$<CONFIG:Release>>>:NDOF_BUILD_MODE_VALUE=\"undefined\">)
 
 target_compile_options(error PRIVATE
     $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive- $<$<BOOL:${NDOF_WERROR}>:/WX>>

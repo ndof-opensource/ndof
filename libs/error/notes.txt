@@ -1,0 +1,12 @@
+[08/22/26 11:46] TODO: Consider an mcp server that assembles a pipeline from store assets.
+[08/25/26 19:13] TODO: chmod 644
+[09/02/26 01:06] TODO: Make sure all code that may require a thread guard uses the configurable thread guards.
+[09/02/26 01:27] Note: std::execution::par is something worth considering.  It's behavior varies according to 
+                       whether threads are available and defaults to sequential if not.
+                       Be aware that this may allocate on the heap, so std::execution::par should be provided
+                       by a consteval wrappers like "get_parallel_execution()" that may return std::execution::seq,
+                       depending on whether heap allocation is allowed.  
+                 TODO: Add a flag to detect if heap allocation is allowed after initialization (NASA guidelines).
+                 Note: Nasty.  https://towardsdev.com/cpp17-parallel-algorithms-std-execution-deep-dive-6d5ddeff78f5
+                       This blog indicates that using std::execution may terminate if any exception is thrown.
+                       Another interesting fact, par_unseq *may* perform SIMD + multithreading.
