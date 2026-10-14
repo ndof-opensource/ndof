@@ -61,17 +61,18 @@ direct_deps() {
 # broken alphabetically so the order is stable. Walks the requires graph
 # depth first; a cycle, or a requires naming a library that is not under
 # libs/, is an error.
+# Written for bash 3.2 (macOS's /bin/bash, which the macOS CI job uses):
+# membership is tracked in space-delimited strings, not associative arrays.
 order_libs() {
-    local -A state=()
-    local -a order=()
-    local l
+    local visited=" " inprogress=" " order="" l
     visit() {
         local lib=$1 d
-        case ${state[$lib]:-} in
-            done) return 0 ;;
-            active) echo "error: dependency cycle through libs/$lib" >&2; return 1 ;;
-        esac
-        state[$lib]=active
+        [[ $visited == *" $lib "* ]] && return 0
+        if [[ $inprogress == *" $lib "* ]]; then
+            echo "error: dependency cycle through libs/$lib" >&2
+            return 1
+        fi
+        inprogress="$inprogress$lib "
         for d in $(direct_deps "$lib"); do
             if [[ ! -f "$ROOT/libs/$d/conanfile.py" ]]; then
                 echo "error: libs/$lib requires ndof-$d, but there is no libs/$d/conanfile.py" >&2
@@ -79,13 +80,13 @@ order_libs() {
             fi
             visit "$d" || return 1
         done
-        state[$lib]=done
-        order+=("$lib")
+        visited="$visited$lib "
+        order="$order$lib "
     }
     for l in $(cd "$ROOT/libs" && for d in */; do [[ -f $d/conanfile.py ]] && echo "${d%/}"; done | sort); do
         visit "$l" || return 1
     done
-    printf '%s\n' "${order[@]}"
+    printf '%s\n' $order
 }
 
 # LIBS is the computed build order. Everything below treats it as the
@@ -224,8 +225,8 @@ deps_of() {
     local -a stack=("$1")
     local l d
     while [[ ${#stack[@]} -gt 0 ]]; do
-        l=${stack[-1]}
-        unset 'stack[-1]'
+        l=${stack[$((${#stack[@]} - 1))]}
+        unset "stack[$((${#stack[@]} - 1))]"
         for d in $(direct_deps "$l"); do
             if [[ " ${wanted[*]:-} " != *" $d "* ]]; then
                 wanted+=("$d")
