@@ -11,7 +11,7 @@ if(CMAKE_TOOLCHAIN_FILE AND NOT EXISTS "${CMAKE_TOOLCHAIN_FILE}")
 endif()
 
 project(ndof-core
-    VERSION 0.1.0
+    VERSION 0.1.1
     DESCRIPTION "Foundational utilities for the ndof framework family"
     HOMEPAGE_URL "https://github.com/ndof-opensource/ndof"
     LANGUAGES CXX)

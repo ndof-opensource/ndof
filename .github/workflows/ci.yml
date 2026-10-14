@@ -98,6 +98,8 @@ jobs:
       # CMakePresets.json, cmake/, include/, src/, tests/, conanfile.py)
       # while its version still equals its latest release tag must also
       # bump the version. README changes do not count.
+      # A library's CMake project(VERSION) must equal its conanfile version;
+      # both are bumped together.
       - name: Versions and requires track the tree (decision 18)
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -105,9 +107,17 @@ jobs:
           version_of() {
             python3 -c "import re,sys; print(re.search(r'version\s*=\s*\"([^\"]+)\"', open(sys.argv[1]).read()).group(1))" "libs/$1/conanfile.py"
           }
+          cmake_version_of() {
+            python3 -c "import re,sys; print(re.search(r'project\s*\(\s*\S+\s+VERSION\s+(\S+)', open(sys.argv[1]).read()).group(1))" "libs/$1/CMakeLists.txt"
+          }
           fail=0
           for lib in $LIBS; do
             v=$(version_of "$lib")
+            cv=$(cmake_version_of "$lib")
+            if [[ "$cv" != "$v" ]]; then
+              echo "::error file=libs/$lib/CMakeLists.txt::project(VERSION $cv) differs from conanfile.py version $v; the two must be bumped together"
+              fail=1
+            fi
             for ref in $(grep -oE 'requires\("ndof-[a-z0-9-]+/[^"]+"\)' "libs/$lib/conanfile.py" | sed -E 's/.*\("([^"]+)"\).*/\1/' || true); do
               dep=${ref#ndof-}; dep=${dep%%/*}; want=${ref#*/}
               if [[ ! -f "libs/$dep/conanfile.py" ]]; then

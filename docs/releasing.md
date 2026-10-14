@@ -45,8 +45,11 @@ first release is simply `<name>/v0.1.0`; no bump is needed. CI enforces
 the rule (the `format` job): a PR that changes a library's packaged files
 (`CMakeLists.txt`, `CMakePresets.json`, `cmake/`, `include/`, `src/`,
 `tests/`, `conanfile.py`) while its version still equals its latest
-release tag fails until the version is bumped, and a `requires` on another
-ndof library must name that library's current working version.
+release tag fails until the version is bumped, a `requires` on another
+ndof library must name that library's current working version, and
+`project(... VERSION ...)` in the library's `CMakeLists.txt` must equal
+the conanfile version (it is what `library_version()` and the installed
+package report).
 
 ### The Procedure
 
