@@ -21,8 +21,9 @@ on:
   pull_request:
 
 env:
-  # Tool versions for the native macOS/Windows jobs. Keep in sync with the
-  # dev image (ndof-infra, image/Dockerfile).
+  # Tool versions for the native macOS/Windows jobs. They must equal the
+  # versions image/Dockerfile installs into the dev image; the format job
+  # checks that.
   CONAN_VERSION: 2.9.2
   CMAKE_VERSION: 3.30.5
   NINJA_VERSION: 1.11.1.1
@@ -150,6 +151,28 @@ jobs:
               fi
             fi
           done
+          exit $fail
+      # The native macOS/Windows jobs and publish.yml install Conan, CMake,
+      # and Ninja themselves, at the versions in the env blocks of the
+      # workflows. Those must equal the versions image/Dockerfile puts in the
+      # dev image, so every platform builds with the same tools.
+      - name: Tool versions match image/Dockerfile
+        run: |
+          fail=0
+          docker_arg() { sed -n "s/^ARG $1=//p" image/Dockerfile; }
+          for tool in CONAN_VERSION CMAKE_VERSION NINJA_VERSION; do
+            want=$(docker_arg "$tool")
+            have=$(printenv "$tool")
+            if [[ "$want" != "$have" ]]; then
+              echo "::error file=.github/workflows/ci.yml::$tool is $have here but $want in image/Dockerfile"
+              fail=1
+            fi
+          done
+          pub=$(sed -n 's/^  CONAN_VERSION: *//p' .github/workflows/publish.yml)
+          if [[ "$pub" != "$(docker_arg CONAN_VERSION)" ]]; then
+            echo "::error file=.github/workflows/publish.yml::CONAN_VERSION is $pub here but $(docker_arg CONAN_VERSION) in image/Dockerfile"
+            fail=1
+          fi
           exit $fail
 
   linux:
@@ -316,6 +339,116 @@ jobs:
           cmake -S "$c" -B "$c/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$prefix"
           cmake --build "$c/build"
           "$c/build/consumer"
+
+  # New libraries are created from scripts/library-skeleton by
+  # scripts/new-library.sh. Stamp a scratch library and run the gates on it,
+  # so if the real libraries drift from the skeleton, we catch the failure
+  # early and can fix it, before the next person needs it to print a new
+  # library. The scratch library exists only in this
+  # job's checkout.
+  new-library:
+    needs: digest-sync
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.digest-sync.outputs.image }}
+      options: --user root
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Stamp a scratch library from the skeleton
+        run: |
+          scripts/new-library.sh scratch "Scratch library stamped by CI"
+          if grep -rn "__NAME\|__DESCRIPTION" libs/scratch; then
+            echo "::error::placeholders left in the stamped library"; exit 1
+          fi
+          if find libs/scratch -name '*__*' | grep .; then
+            echo "::error::placeholder left in a file or directory name"; exit 1
+          fi
+          if ! grep -q "PathMatch: libs/scratch/" .clangd; then
+            echo "::error::no .clangd fragment was added"; exit 1
+          fi
+      - name: Run the gates on the scratch library
+        run: |
+          scripts/build.sh scratch debug --profile linux-clang19
+          find libs/scratch/include libs/scratch/src libs/scratch/tests -name '*.cpp' -o -name '*.hpp' \
+            | xargs clang-format --dry-run -Werror
+          grep -qxF "#ifndef NDOF_SCRATCH_VERSION_HPP" libs/scratch/include/ndof/scratch/version.hpp
+          run-clang-tidy -p libs/scratch/build/Debug -warnings-as-errors='*' -quiet
+          cppcheck --project=libs/scratch/build/Debug/compile_commands.json \
+            --library=googletest \
+            --enable=warning,style,performance,portability \
+            --error-exitcode=1 --quiet
+          conan create libs/scratch --build=missing -pr:a /opt/conan/profiles/linux-gcc14 -s build_type=Release
+
+  # A change to the image definition is tested before it merges: build the
+  # candidate image from this commit (amd64 only, never published) and run
+  # the libraries' whole pipeline inside it. The other jobs cannot do this;
+  # they run in the already-published image pinned in devcontainer.json.
+  # The job always runs so it can be a required check, and does the work
+  # only when the image definition, the Conan profiles, or the workflow that
+  # publishes them changed.
+  image-candidate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history, so the commit this change is based on is available
+          # to compare against.
+          fetch-depth: 0
+      - name: Did the image definition change?
+        id: changed
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [[ -n "$BASE_REF" ]]; then
+            range="origin/$BASE_REF...HEAD"
+          elif [[ -n "$BEFORE" && "$BEFORE" != 0000000000000000000000000000000000000000 ]] && git cat-file -e "$BEFORE" 2>/dev/null; then
+            range="$BEFORE..HEAD"
+          else
+            range=""
+          fi
+          if [[ -z "$range" ]]; then
+            echo "no base to compare against; testing the image"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          elif [[ -n "$(git diff --name-only "$range" -- image conan/profiles .github/workflows/build-image.yml)" ]]; then
+            echo "image definition changed; testing the candidate"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "image definition unchanged; nothing to test"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.changed.outputs.run == 'true'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build the candidate image
+        if: steps.changed.outputs.run == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: image/Dockerfile
+          load: true
+          tags: ndof-dev:candidate
+      # Root inside the container for the same reason as the other container
+      # jobs: the checkout belongs to the runner's user.
+      - name: Build, test, sanitize, analyze, and package every library in the candidate
+        if: steps.changed.outputs.run == 'true'
+        run: |
+          docker run --rm --user root -v "$PWD:/w" -w /w ndof-dev:candidate bash -c '
+            set -e
+            git config --global --add safe.directory /w
+            scripts/build.sh all debug
+            scripts/build.sh all release --profile linux-clang19
+            scripts/build.sh all asan --profile linux-clang19
+            scripts/build.sh all debug --profile linux-clang19
+            git ls-files "*.cpp" "*.hpp" | xargs -r clang-format --dry-run -Werror
+            for lib in $(scripts/build.sh --list); do
+              run-clang-tidy -p "libs/$lib/build/Debug" -warnings-as-errors="*" -quiet
+              cppcheck --project="libs/$lib/build/Debug/compile_commands.json" --library=googletest --enable=warning,style,performance,portability --error-exitcode=1 --quiet
+            done
+            for lib in $(scripts/build.sh --list); do
+              conan create "libs/$lib" --build=missing -pr:a /opt/conan/profiles/linux-gcc14 -s build_type=Release
+            done
+          '
 
   macos:
     runs-on: macos-14 # arm64

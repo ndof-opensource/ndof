@@ -106,6 +106,9 @@ must be free to use vcpkg, FetchContent, or system packages. Exported
 
 ## 7. ndof-infra is public
 
+*Decision 19 moved the environment definition into the ndof repository,
+which is public for the same reasons; ndof-infra is retired.*
+
 **Decision.** This repository, and the `ndof-dev` GHCR package, are public
 under `ndof-opensource`.
 
@@ -197,6 +200,8 @@ a human at pin-bump time, and signing/verification machinery is a private-
 layer control if it is ever needed.
 
 ## 12. Template environment references are absolute and pinned
+
+*Superseded by decisions 18 and 19: there is no template.*
 
 **Decision.** In `template/`, references to the development environment —
 the dev-image digest in `devcontainer.json`, the reusable-workflow ref and
@@ -373,9 +378,8 @@ the full procedure lives in `docs/releasing.md`.
 
 ## 17. Pin maintenance is automated by infra-side workflows with a GitHub App
 
-*Superseded by decision 18 for this repository: a single digest line
-replaces both pin channels. The machinery remains in ndof-infra while the
-per-library repositories exist.*
+*Superseded by decisions 18 and 19: a single digest line replaces both
+pin channels, and the propagation workflows were retired with ndof-infra.*
 
 **Decision.** Every pin downstream of an environment or CI change is
 maintained by two workflows in this repository, each producing rolling
@@ -498,3 +502,35 @@ requires its dependencies' versions to be published first; `publish.yml`
 refuses otherwise. The repository carries one `.devcontainer`, one set of
 tooling configuration files, and one `AUTHORS`, which ends template
 synchronization.
+
+## 19. The environment definition lives in the ndof repository
+
+**Decision.** The dev image definition (`image/Dockerfile`, the LLVM apt
+key, `conan/profiles/`) and the workflow that publishes it
+(`build-image.yml`) live in the ndof repository, completing the
+consolidation decision 18 began. The image keeps its name,
+`ghcr.io/ndof-opensource/ndof-dev`, so every digest ever pinned stays
+valid. ndof-infra is archived, and the per-library repositories follow.
+Retired with them: the project template and `scripts/new-project.sh` (replaced
+by `scripts/new-library.sh` and a small skeleton that CI stamps and
+tests on every change), the cross-repository
+workspace, the reusable CI and publish workflows, and the two
+pin-propagation workflows of decision 17.
+
+**Rationale.** ndof-infra existed to give several repositories one
+environment and one CI definition. With one repository there is nothing to
+share across, and keeping the definition elsewhere meant the tool versions
+in the workflows could only be kept equal to the Dockerfile's by hand.
+An image change could only be tested against a stamped scratch project
+instead of the real libraries.
+
+**Consequence.** An image change is tested before merge by CI's
+`image-candidate` job, which builds the candidate image and runs every
+library's build, tests, sanitizers, analyzers, and packaging inside it.
+Publishing an image still changes nothing by itself: adoption is a
+separate reviewed change to the digest line in
+`.devcontainer/devcontainer.json`, per decision 1. The `format` job
+enforces that the Conan, CMake, and Ninja versions in the workflows equal
+the Dockerfile's. Decisions 1, 2, 11, and 13 apply unchanged, read with
+"this repository" in place of ndof-infra.
+

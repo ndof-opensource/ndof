@@ -7,14 +7,14 @@ want the *reasons* behind the setup, read [decisions.md](decisions.md).
 ## The mental model in one paragraph
 
 This repository holds the ndof libraries, one self-contained CMake project
-and Conan recipe per directory under `libs/`. The team **environment** (a
-Dockerfile and Conan profiles) is defined in
-[ndof-infra](https://github.com/ndof-opensource/ndof-infra) and published as
-a container image identified by an immutable digest; this repository pins
-that digest in `.devcontainer/devcontainer.json`, and CI reads it from
-there. So every commit records exactly which environment built it, any
-machine can reproduce it, and changing the environment is a reviewed pull
-request in ndof-infra followed by a one-line pin update here.
+and Conan recipe per directory under `libs/`. The team **environment** is
+defined here too (`image/Dockerfile` and the Conan profiles in
+`conan/profiles/`) and published as a container image identified by an
+immutable digest. `.devcontainer/devcontainer.json` pins that digest, and
+CI reads it from there. So every commit records exactly which environment
+built it, any machine can reproduce it, and changing the environment is
+two reviewed pull requests: one that changes the definition, and one that
+changes the pinned digest to the image built from it.
 
 ## Day one
 
@@ -172,6 +172,8 @@ from each conanfile's `requires`; there is no hand-kept list). Every push and pu
 | `cppcheck` | A second, independent static analyzer also finds nothing | `cppcheck --project=libs/<name>/build/Debug/compile_commands.json --library=googletest --enable=warning,style,performance,portability --error-exitcode=1` |
 | `package` | Each Conan recipe works on its own: export, build, test, and install as a package, in dependency order | `conan create libs/<name> --build=missing -pr:a /opt/conan/profiles/linux-gcc14 -s build_type=Release` |
 | `plain-cmake` | Every library installs and is consumable with plain CMake and no package manager (decision 6): all libraries installed to one prefix, then a scratch consumer built with `find_package` alone | `cmake -S libs/<name> -B build-plain -DNDOF_BUILD_TESTS=OFF && cmake --build build-plain && cmake --install build-plain --prefix /tmp/ndof` |
+| `new-library` | `scripts/new-library.sh` still produces a library that passes the gates | `scripts/new-library.sh scratch "test"`, build it, then delete `libs/scratch` and its `.clangd` fragment |
+| `image-candidate` | A change to the image definition or Conan profiles still builds, tests, and packages every library (does nothing when neither changed) | `docker build -f image/Dockerfile -t ndof-dev:candidate .` then run the commands above inside it |
 | `macos` / `windows` | Portability to AppleClang and MSVC | native runners only — CI is the arbiter |
 
 The `package` job is also the gate that keeps libraries honest with each
@@ -182,10 +184,10 @@ installs) compiles in the editor and fails here.
 The objective of CI (**Continuous Integration**): every change is built and
 tested automatically before it lands, so integration breakage surfaces in
 minutes and quality is the default path, not a discipline. The **CD**
-(Continuous Delivery) side is `build-image.yml` in ndof-infra, which
-publishes the environment image on merge there, and `publish.yml` here,
-which publishes one library's Conan package when its version tag is pushed
-(see [releasing.md](releasing.md)).
+(Continuous Delivery) side is `build-image.yml`, which publishes the
+environment image when a change to its definition merges, and
+`publish.yml`, which publishes one library's Conan package when its
+version tag is pushed (see [releasing.md](releasing.md)).
 
 ## Changing the environment: the one pin
 
@@ -200,13 +202,39 @@ What each kind of change requires:
 
 | Change | Where | Then |
 |---|---|---|
-| compilers, tools, Conan profiles | a PR to ndof-infra (`image/Dockerfile`, `conan/profiles/`); `build-image.yml` there publishes the new image and prints its digest | one PR here changing the digest line; its CI running green against the new image *is* the adoption test |
-| CI logic | a PR here to `.github/workflows/ci.yml` | nothing; it takes effect on merge |
-| tool versions for the native macOS/Windows jobs (`env:` in `ci.yml`) | updated by hand to match any changes made to the devcontainer image Dockerfile, ideally in the same PR | |
+| compilers, tools, Conan profiles | a PR changing `image/Dockerfile` or `conan/profiles/`. CI's `image-candidate` job builds the changed image and runs every library's build, tests, sanitizers, analyzers, and packaging inside it before the PR can merge. On merge, `build-image.yml` publishes the image and prints its digest | a second PR changing the digest line in `.devcontainer/devcontainer.json`; its CI running green against the published image *is* the adoption test |
+| CI logic | a PR to `.github/workflows/ci.yml` | nothing; it takes effect on merge |
+| Conan, CMake, or Ninja version | the `ARG` lines in `image/Dockerfile` and the `env:` blocks in `ci.yml` and `publish.yml`, in the same PR; CI's `format` job fails if they differ | the digest PR, as for any image change |
 
-Rollback = revert the pin PR. Dependabot covers the third-party actions
-used by the workflows here (github-actions ecosystem); it never touches
-the digest, which is why the adoption PR is a deliberate, reviewed step.
+Rollback = revert the pin PR. Until the digest line changes, nothing
+builds with a newly published image, so a bad image costs nothing but the
+PR that would have adopted it.
+
+Dependabot opens PRs for the third-party actions used by the workflows
+and for the digest of the ubuntu base in `image/Dockerfile` (which is an
+image change like any other: `image-candidate` tests it, and it needs its
+digest PR afterwards). It never touches the dev image digest itself.
+
+## Adding a library
+
+```sh
+scripts/new-library.sh <name> "<one-line description>"
+```
+
+`<name>` is lowercase letters only. The script copies
+`scripts/library-skeleton` to `libs/<name>`, fills in the name and
+description, and adds the library's fragment to `.clangd`. The result is a
+library at version 0.1.0 with a version header, one source file, and one
+test, which passes every CI gate as it stands. Then:
+
+1. Add a row for it to the library table in the root `README.md`.
+2. `scripts/build.sh <name> debug`.
+
+Nothing else needs registering: the build order, CI, and publishing all
+discover libraries from `libs/*/conanfile.py`. A change that every new
+library should start with goes into `scripts/library-skeleton`; CI's
+`new-library` job stamps a scratch library from it on every change and
+runs the gates on the result.
 
 ## Common pitfalls (each learned the hard way, once)
 

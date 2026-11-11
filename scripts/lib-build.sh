@@ -67,8 +67,8 @@ fi
 if [[ ! -w . ]]; then
     echo "error: $PWD is not writable by $(id -un 2>/dev/null || echo unknown) (uid $(id -u))" >&2
     echo "This is usually a bind-mount uid mismatch; see \"Common pitfalls\" in" >&2
-    echo "the ndof-infra onboarding guide (linked from this repo's README):" >&2
-    echo "https://github.com/ndof-opensource/ndof-infra/blob/main/docs/onboarding.md" >&2
+    echo "docs/onboarding.md:" >&2
+    echo "https://github.com/ndof-opensource/ndof/blob/main/docs/onboarding.md" >&2
     echo "Do not 'fix' it with chmod -R 777: that marks every tracked file as" >&2
     echo "modified (mode changes) in git." >&2
     exit 1
@@ -120,7 +120,7 @@ done
 # conanfile.py) are downloaded from the public ndof Conan remote, so make
 # sure Conan knows about it. Anonymous, idempotent, and harmless for a
 # library that depends on no other ndof library. Details:
-# ndof-infra/docs/releasing.md.
+# docs/releasing.md.
 if ! conan remote list | grep -q "^ndof-public:"; then
     run conan remote add ndof-public https://conan.cloudsmith.io/ndof-opensource/packages/
 fi

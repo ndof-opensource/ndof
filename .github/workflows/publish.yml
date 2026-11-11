@@ -22,7 +22,7 @@ on:
     tags: ["*/v*"]
 
 env:
-  # Keep in sync with the dev image (ndof-infra, image/Dockerfile).
+  # Must equal CONAN_VERSION in image/Dockerfile; CI's format job checks it.
   CONAN_VERSION: 2.9.2
 
 jobs:
