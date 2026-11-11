@@ -462,6 +462,13 @@ jobs:
           "$HOME/toolchain/bin/pip" install "conan==$CONAN_VERSION" "cmake==$CMAKE_VERSION" "ninja==$NINJA_VERSION"
           echo "$HOME/toolchain/bin" >> "$GITHUB_PATH"
       - run: conan profile detect --force
+      # The pinned Conan may predate the runner's Xcode and reject its
+      # compiler version as unknown. Add whatever version was just detected
+      # to Conan's list of valid apple-clang versions.
+      - name: Accept the runner's Apple clang version
+        run: |
+          v=$(sed -n 's/^compiler.version=//p' "$(conan profile path default)")
+          printf 'compiler:\n  apple-clang:\n    version: ["%s"]\n' "$v" > "$(conan config home)/settings_user.yml"
       - run: scripts/build.sh all release
 
   windows:
