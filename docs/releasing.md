@@ -281,7 +281,7 @@ dependency's `libs/<name>` directory. A header accidentally left out of packagin
 or in a new top-level directory, which should not happen) therefore works
 fine in editable mode and breaks only for real consumers. CI's `package`
 job (`conan create` for every library, in dependency order, on every
-change) exists to catch exactly that, so trust a green `ci / package` over
+change) exists to catch exactly that, so trust a green `package` check over
 "it worked in editable".
 
 Shipping: the dependency's changes and the consumer's land in the same PR.
