@@ -18,9 +18,9 @@ other only through their published interfaces.
 
 ## Development
 
-The canonical environment is the ndof dev container, defined and published
-by [ndof-infra](https://github.com/ndof-opensource/ndof-infra) and pinned by
-digest in `.devcontainer/devcontainer.json`. Prerequisites: Docker and a
+The canonical environment is the ndof dev container, defined in
+`image/Dockerfile`, published by `.github/workflows/build-image.yml`, and
+pinned by digest in `.devcontainer/devcontainer.json`. Prerequisites: Docker and a
 devcontainer-capable editor (e.g. VS Code, Zed, JetBrains) or the
 [devcontainer CLI](https://github.com/devcontainers/cli). Nothing else is installed on your host.
 

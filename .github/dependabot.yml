@@ -1,7 +1,8 @@
-# Keeps the commit-pinned third-party actions in .github/workflows fresh via
-# reviewed PRs, grouped so one PR carries a week's bumps. The dev image is
-# built and pinned in ndof-infra; its digest is adopted here by a one-line
-# change to .devcontainer/devcontainer.json, which Dependabot does not scan.
+# Keeps two kinds of pin fresh via reviewed PRs: the commit-pinned
+# third-party actions in .github/workflows (grouped, so one PR carries a
+# week's bumps), and the digest of the ubuntu base image in image/Dockerfile.
+# The dev image's own digest in .devcontainer/devcontainer.json is not
+# something Dependabot scans.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -11,3 +12,15 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /image
+    schedule:
+      interval: weekly
+    # Digest refreshes of the pinned 24.04 base are wanted. A newer Ubuntu
+    # release is a platform migration (interim releases also reach end of
+    # life within months) and is never adopted by a bot.
+    ignore:
+      - dependency-name: ubuntu
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"

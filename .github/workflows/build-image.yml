@@ -1,0 +1,79 @@
+# Builds the dev image from image/Dockerfile and publishes it, multi-arch,
+# to ghcr.io/ndof-opensource/ndof-dev when a change to the image definition
+# or the Conan profiles reaches main. Publishing does not change what anyone
+# builds with: the image in use is the digest pinned in
+# .devcontainer/devcontainer.json, and adopting a new one is a separate,
+# reviewed change to that line. A change to the image is tested before merge
+# by the image-candidate job in ci.yml.
+
+name: Build and publish dev image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "image/**"
+      - "conan/profiles/**"
+      - ".github/workflows/build-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      # Third-party actions are pinned to commit SHAs (tags are mutable and
+      # have been retargeted in real supply-chain attacks); Dependabot
+      # (github-actions ecosystem) keeps the pins fresh via reviewed PRs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/ndof-dev
+          tags: |
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: image/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Attach an SBOM (per-package inventory) and SLSA provenance
+          # attestation to every published image, so each digest carries a
+          # verifiable answer to "what is inside, and what built it".
+          sbom: true
+          provenance: mode=max
+
+      - name: Print digest for pinning
+        run: |
+          echo "Adopt this image by pinning it in .devcontainer/devcontainer.json as:"
+          echo "  ghcr.io/${{ github.repository_owner }}/ndof-dev@${{ steps.push.outputs.digest }}"
+
+      - name: Publish the digest of record
+        # The digest of the image this run published, kept as an artifact so
+        # the pin can be taken from the run of record and never re-derived
+        # from a mutable tag.
+        run: echo "${{ steps.push.outputs.digest }}" > digest.txt
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-digest
+          path: digest.txt
