@@ -1,0 +1,143 @@
+# Opens the pull request that adopts a newly published dev image.
+#
+# build-image.yml publishes an image when its definition changes on main,
+# but nothing builds with that image until the digest pinned in
+# .devcontainer/devcontainer.json changes. This workflow runs when
+# build-image.yml finishes, rewrites that one line to the digest the build
+# published, and opens a pull request with the change. CI on that pull
+# request runs every job inside the newly published image, which is the
+# test of the image; a person reviews and merges it.
+#
+# One branch, bots/refresh-image, is reused for this: each run force-pushes
+# it to the current digest, and a pull request is opened only if none is
+# open, so several image builds in a row update one pull request instead of
+# stacking several. The branch belongs to this workflow: the bot-branches
+# ruleset refuses pushes to bots/* from anyone but the ndof-pins App.
+#
+# The digest is read from the image-digest artifact of the latest
+# successful build-image run on main, not from a tag such as :latest.
+#
+# The pull request is created with a token from the ndof-pins GitHub App
+# (secrets PINS_APP_ID and PINS_APP_PRIVATE_KEY) because a pull request created
+# with the workflow's own token would not trigger CI. Merging it cannot
+# start this workflow again: it changes only devcontainer.json, which
+# build-image.yml does not build from.
+
+name: Refresh image pin
+
+on:
+  workflow_run:
+    workflows: ["Build and publish dev image"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: refresh-image-pin
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-24.04
+    # When started by a build-image run, act only if that run succeeded.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    steps:
+      - name: Get a token for the ndof-pins App
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.PINS_APP_ID }}
+          private-key: ${{ secrets.PINS_APP_PRIVATE_KEY }}
+          owner: ndof-opensource
+          repositories: ndof
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          token: ${{ steps.app.outputs.token }}
+
+      - name: Read the published digest
+        id: digest
+        env:
+          # Downloading another run's artifact needs actions:read, which the
+          # App does not have; use the workflow's own token for this step.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          run_id=$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/build-image.yml/runs?branch=main&status=success&per_page=1" \
+            --jq '.workflow_runs[0].id // empty')
+          if [[ -z "$run_id" ]]; then
+            echo "::error::no successful build-image run on main; run build-image.yml first"
+            exit 1
+          fi
+          if ! gh run download "$run_id" -n image-digest --dir "$RUNNER_TEMP/image-digest"; then
+            echo "::error::build-image run $run_id has no image-digest artifact (artifacts expire after 90 days); run build-image.yml again"
+            exit 1
+          fi
+          digest=$(tr -d '[:space:]' < "$RUNNER_TEMP/image-digest/digest.txt")
+          if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::build-image run $run_id recorded '$digest', which is not a digest"
+            exit 1
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "published digest: $digest (build-image run $run_id)"
+
+      - name: Rewrite the pin
+        id: rewrite
+        env:
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          sed -i -E \
+            "s%(ghcr\.io/ndof-opensource/ndof-dev)@sha256:[0-9a-f]{64}%\1@${DIGEST}%" \
+            .devcontainer/devcontainer.json
+          # If the pin line no longer has the expected form, fail here
+          # instead of reporting that nothing changed.
+          grep -qF "ndof-dev@${DIGEST}" .devcontainer/devcontainer.json
+          if git diff --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "the pinned digest is already the published one; nothing to do"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff
+          fi
+
+      - name: Push the branch and open or update the pull request
+        if: steps.rewrite.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+          RUN_ID: ${{ steps.digest.outputs.run_id }}
+        run: |
+          bot="${APP_SLUG}[bot]"
+          uid=$(gh api "users/${bot}" --jq '.id')
+          git config user.name "$bot"
+          git config user.email "${uid}+${bot}@users.noreply.github.com"
+          git switch -c bots/refresh-image
+          git add .devcontainer/devcontainer.json
+          git commit -m "Adopt the newly published dev image" \
+            -m "Image digest ${DIGEST}, published by build-image run ${RUN_ID}."
+          git push --force origin bots/refresh-image
+          body="Adopts the dev image published by build-image run ${RUN_ID}.
+
+          - image digest: ${DIGEST}
+
+          Opened by the refresh-image-pin workflow. CI on this pull request runs
+          inside the new image, so green checks here are the test of the image.
+          The branch is force-pushed on every run, so this pull request always
+          shows one commit with the latest published digest."
+          if [[ -z "$(gh pr list --head bots/refresh-image --state open --json number --jq '.[].number')" ]]; then
+            gh pr create --head bots/refresh-image \
+              --title "Adopt the newly published dev image" \
+              --body "$body"
+          else
+            # A force-push moves the branch but does not change the pull
+            # request's description; rewrite it to match.
+            gh pr edit bots/refresh-image --body "$body"
+            echo "pull request already open; branch and description updated"
+          fi

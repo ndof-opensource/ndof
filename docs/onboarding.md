@@ -13,8 +13,9 @@ defined here too (`image/Dockerfile` and the Conan profiles in
 immutable digest. `.devcontainer/devcontainer.json` pins that digest, and
 CI reads it from there. So every commit records exactly which environment
 built it, any machine can reproduce it, and changing the environment is
-two reviewed pull requests: one that changes the definition, and one that
-changes the pinned digest to the image built from it.
+two reviewed pull requests: one that changes the definition, and one,
+opened automatically, that changes the pinned digest to the image built
+from it.
 
 ## Day one
 
@@ -202,7 +203,7 @@ What each kind of change requires:
 
 | Change | Where | Then |
 |---|---|---|
-| compilers, tools, Conan profiles | a PR changing `image/Dockerfile` or `conan/profiles/`. CI's `image-candidate` job builds the changed image and runs every library's build, tests, sanitizers, analyzers, and packaging inside it before the PR can merge. On merge, `build-image.yml` publishes the image and prints its digest | a second PR changing the digest line in `.devcontainer/devcontainer.json`; its CI running green against the published image *is* the adoption test |
+| compilers, tools, Conan profiles | a PR changing `image/Dockerfile` or `conan/profiles/`. CI's `image-candidate` job builds the changed image and runs every library's build, tests, sanitizers, analyzers, and packaging inside it before the PR can merge. On merge, `build-image.yml` publishes the image | `refresh-image-pin.yml` opens a second PR changing the digest line in `.devcontainer/devcontainer.json`; its CI running green against the published image *is* the adoption test. Review and merge it |
 | CI logic | a PR to `.github/workflows/ci.yml` | nothing; it takes effect on merge |
 | Conan, CMake, or Ninja version | the `ARG` lines in `image/Dockerfile` and the `env:` blocks in `ci.yml` and `publish.yml`, in the same PR; CI's `format` job fails if they differ | the digest PR, as for any image change |
 
@@ -210,10 +211,22 @@ Rollback = revert the pin PR. Until the digest line changes, nothing
 builds with a newly published image, so a bad image costs nothing but the
 PR that would have adopted it.
 
+The digest PR is opened by `.github/workflows/refresh-image-pin.yml` when
+`build-image.yml` finishes. It always uses the branch `bots/refresh-image`
+and force-pushes it, so if several images are published before anyone
+reviews, there is still only one PR, showing the latest digest. Branches
+under `bots/` belong to automation: the `bot-branches` ruleset refuses
+pushes to them from anyone but the `ndof-pins` App. The workflow acts as
+the `ndof-pins` GitHub App (secrets `PINS_APP_ID` and
+`PINS_APP_PRIVATE_KEY`), because a PR opened with a workflow's own token
+does not trigger CI. If the workflow is ever broken, the digest line can
+be changed by hand in an ordinary PR; `build-image.yml` prints the digest,
+and "Run workflow" on `refresh-image-pin.yml` retries it.
+
 Dependabot opens PRs for the third-party actions used by the workflows
 and for the digest of the ubuntu base in `image/Dockerfile` (which is an
-image change like any other: `image-candidate` tests it, and it needs its
-digest PR afterwards). It never touches the dev image digest itself.
+image change like any other: `image-candidate` tests it, and its digest
+PR follows automatically). It never touches the dev image digest itself.
 
 ## Adding a library
 

@@ -4,8 +4,8 @@
     // digest lives: local editors start the container from it and CI's
     // digest-sync job reads it from here. The image is defined by
     // image/Dockerfile and published by build-image.yml; adopting a newly
-    // published one is a one-line change to this file. Dependabot does not
-    // scan this file.
+    // published one is a one-line change to this file, which
+    // refresh-image-pin.yml opens as a pull request.
     "image": "ghcr.io/ndof-opensource/ndof-dev@sha256:bd2c567144c6966a846ad140aa649f27e619a71e601ca069bdc48bc4ddc86279",
     "remoteUser": "dev",
     // Spec default, stated explicitly because Linux hosts depend on it: at

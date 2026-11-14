@@ -529,7 +529,10 @@ instead of the real libraries.
 library's build, tests, sanitizers, analyzers, and packaging inside it.
 Publishing an image still changes nothing by itself: adoption is a
 separate reviewed change to the digest line in
-`.devcontainer/devcontainer.json`, per decision 1. The `format` job
+`.devcontainer/devcontainer.json`, per decision 1. That change is opened
+automatically by `refresh-image-pin.yml`, using the credentials of the `ndof-pins`
+GitHub App described by decision 17, on one reused branch so that repeated
+publishes update a single pull request; a person reviews and merges it. The `format` job
 enforces that the Conan, CMake, and Ninja versions in the workflows equal
 the Dockerfile's. Decisions 1, 2, 11, and 13 apply unchanged, read with
 "this repository" in place of ndof-infra.
