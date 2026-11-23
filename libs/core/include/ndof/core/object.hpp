@@ -10,9 +10,14 @@
 #include <algorithm>
 #include <concepts>
 #include <cstddef>
+// REVIEW: node_kind below uses std::uint8_t, which this header never included; it
+//         arrived only through other headers.
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <source_location>
+// REVIEW: needed for the new return type of elements(); see the note there.
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -160,7 +165,12 @@ public:
         value_ = std::move(val);
     }
 
-    [[nodiscard]] const typename node_traits::allocator_type& get_allocator() const noexcept {
+    // REVIEW: returned a const reference. basic_string::get_allocator() returns by
+    //         value, so that was a reference to a temporary (GCC: -Wreturn-local-addr),
+    //         destroyed by the time the caller received it. Any use of the result read
+    //         dead stack memory - undefined behavior.
+    //         Now returns by value, as the standard containers do.
+    [[nodiscard]] typename node_traits::allocator_type get_allocator() const noexcept {
         return value_.get_allocator();
     }
 
@@ -231,7 +241,8 @@ public:
         value_ = v;
     }
 
-    [[nodiscard]] const typename node_traits::allocator_type& get_allocator() const noexcept {
+    // REVIEW: same dangling reference as text_node::get_allocator(); now by value.
+    [[nodiscard]] typename node_traits::allocator_type get_allocator() const noexcept {
         return name_.get_allocator();
     }
 
@@ -304,7 +315,8 @@ public:
         content_ = c;
     }
 
-    [[nodiscard]] const typename node_traits::allocator_type& get_allocator() const noexcept {
+    // REVIEW: same dangling reference as text_node::get_allocator(); now by value.
+    [[nodiscard]] typename node_traits::allocator_type get_allocator() const noexcept {
         return content_.get_allocator();
     }
 
@@ -345,8 +357,8 @@ using node_variant = std::variant<
 
 
 
-// TODO: Update the template argument list to accept a CharTraits template parameter for the string type, so that we can support custom character traits.
-//       That should be done throughout the entire library, so that we can support custom character traits for the string type.
+// REVIEW: removed the TODO that asked for a CharTraits template parameter here; the
+//         Traits parameter below already provides it.
 // Main object class - supports XML, JSON, YAML parsing
 template<typename CharT = char, typename Traits = default_char_traits_t<CharT>, allocator_like Allocator = std::allocator<CharT>>
 class basic_object {
@@ -367,10 +379,15 @@ public:
         initialize_for_kind(k);
     }
  
+    // REVIEW: the default argument was get_default_allocator(), which is always a
+    //         std::allocator<char>. That does not convert to a std::pmr allocator, so a
+    //         pmr object could not be built from a string. A default-constructed
+    //         allocator_for_object is the same thing for std::allocator and is valid
+    //         for every other allocator.
     template<character_compatible_type<CharT, Traits> String, allocator_like allocator_for_object = Allocator>
     basic_object(
         String&& n,
-        const allocator_for_object& alloc = get_default_allocator())
+        const allocator_for_object& alloc = allocator_for_object())
                 : name_(make_name(std::forward<String>(n), Allocator(alloc))), value_(std::monostate{}),
                     attributes_(Allocator(alloc)), members_(Allocator(alloc)), allocator_(alloc) {}
 
@@ -382,7 +399,53 @@ public:
                                  const typename node_traits::allocator_type& alloc = typename node_traits::allocator_type())
         : name_(std::move(n), alloc), value_(std::monostate{}), attributes_(alloc), members_(alloc), allocator_(alloc) {}
 
-   
+    // REVIEW: the copy and move assignment operators used to be implicit. For an
+    //         allocator that cannot itself be assigned (std::pmr::polymorphic_allocator)
+    //         the compiler deletes them, which also broke remove_member(),
+    //         extract_member() and remove_element(), since erasing from a vector
+    //         assigns elements. They are now written out and leave allocator_ alone:
+    //         a node keeps the allocator it was built with. The other three special
+    //         members are declared so that they stay exactly as the compiler made them.
+    //         Behaviour with std::allocator is unchanged. Not yet right for pmr, which is
+    //         the allocator design question to settle separately:
+    //
+    //         A plain copy of a std::pmr string or vector deliberately does not inherit
+    //         the source's pool; it takes the default resource. The standard library
+    //         passes a container's allocator down to its elements only if the element
+    //         type announces itself as allocator-aware, by declaring allocator_type and
+    //         constructors that take an allocator last. basic_object does neither.
+    //         Measured result: a copy-constructed tree has all of its strings and
+    //         vectors on the default resource, root included. A copy-assigned tree has
+    //         a correct root, but its children's strings are on the default resource.
+    //         In both cases each copied node's allocator_ still names the source's
+    //         pool, so allocator() does not say where the node's memory is.
+    //         Choices: standard allocator-aware, hidden allocator with type erasure,
+    //         or a hybrid.
+
+    basic_object(const basic_object&) = default;
+    basic_object(basic_object&&) noexcept = default;
+    ~basic_object() = default;
+
+    basic_object& operator=(const basic_object& other) {
+        if (this != &other) {
+            name_ = other.name_;
+            value_ = other.value_;
+            attributes_ = other.attributes_;
+            members_ = other.members_;
+        }
+        return *this;
+    }
+
+    basic_object& operator=(basic_object&& other)
+        noexcept(std::allocator_traits<Allocator>::is_always_equal::value) {
+        if (this != &other) {
+            name_ = std::move(other.name_);
+            value_ = std::move(other.value_);
+            attributes_ = std::move(other.attributes_);
+            members_ = std::move(other.members_);
+        }
+        return *this;
+    }
 
     [[nodiscard]] const typename node_traits::string_type& name() const noexcept {
         return name_;
@@ -394,6 +457,13 @@ public:
 
     [[nodiscard]] const typename node_traits::allocator_type& allocator() const noexcept {
         return allocator_;
+    }
+
+    // REVIEW: new. An object had no way to report its kind: get_node_kind() below is
+    //         private and nothing called it. This exposes that existing logic unchanged.
+    //         (See deleted consteval get_expected_node_kind() around line 618, below.)
+    [[nodiscard]] node_kind kind() const noexcept {
+        return get_node_kind(value_);
     }
 
     // Attribute operations
@@ -450,7 +520,9 @@ public:
     }
 
     [[nodiscard]] basic_object* add_member(const typename node_traits::string_type& member_name, node_kind k) {
-        members_.emplace_back(member_name, basic_object(k, typename node_traits::allocator_type()));
+        // REVIEW: built the child on a default-constructed allocator. The overload
+        //         above uses allocator_, so this now does the same.
+        members_.emplace_back(member_name, basic_object(k, allocator_));
         return &members_.back().second;
     }
 
@@ -499,20 +571,25 @@ public:
     }
 
     // Sequence/array operations
-    [[nodiscard]] typename node_traits::sequence_type& elements() noexcept {
-        if (std::holds_alternative<typename node_traits::sequence_type>(value_)) {
-            return std::get<typename node_traits::sequence_type>(value_);
+    // REVIEW: both overloads returned a reference to a function-local static vector
+    //         when the node is not a sequence. That vector was shared by every object
+    //         of the type (an element pushed through one object appeared in another),
+    //         was built with the first caller's allocator, and was not thread-safe.
+    //         They now return a std::span over this node's own elements, empty when
+    //         the node is not a sequence. size(), indexing and iteration work as
+    //         before; growing the sequence goes through add_element().
+    [[nodiscard]] std::span<basic_object> elements() noexcept {
+        if (auto* seq = std::get_if<typename node_traits::sequence_type>(&value_)) {
+            return std::span<basic_object>(*seq);
         }
-        static typename node_traits::sequence_type empty_seq(allocator_);
-        return empty_seq;
+        return {};
     }
 
-    [[nodiscard]] const typename node_traits::sequence_type& elements() const noexcept {
-        if (std::holds_alternative<typename node_traits::sequence_type>(value_)) {
-            return std::get<typename node_traits::sequence_type>(value_);
+    [[nodiscard]] std::span<const basic_object> elements() const noexcept {
+        if (const auto* seq = std::get_if<typename node_traits::sequence_type>(&value_)) {
+            return std::span<const basic_object>(*seq);
         }
-        static const typename node_traits::sequence_type empty_seq(allocator_);
-        return empty_seq;
+        return {};
     }
 
     [[nodiscard]] basic_object* add_element() {
@@ -529,7 +606,10 @@ public:
             value_ = typename node_traits::sequence_type(allocator_);
         }
         auto& seq = std::get<typename node_traits::sequence_type>(value_);
-        seq.emplace_back(typename node_traits::allocator_type(), k);
+        // REVIEW: passed (allocator, kind); the constructor takes (kind, allocator), so
+        //         this never compiled. It also used a default-constructed allocator
+        //         where add_element() above uses allocator_.
+        seq.emplace_back(k, allocator_);
         return &seq.back();
     }
 
@@ -561,8 +641,11 @@ public:
 
     // Text value operations
     [[nodiscard]] std::optional<typename node_traits::string_type> text_value() const {
-        if (const auto* text = get_node<text_node_type>()) {
-            return text->value();
+        // REVIEW: get_node() returns a std::optional holding a pointer, which cannot
+        //         initialise 'const auto*', so this never compiled.
+        const auto text = get_node<text_node_type>();
+        if (text) {
+            return (*text)->value();
         }
         return std::nullopt;
     }
@@ -575,9 +658,17 @@ public:
         value_ = text_node_type(std::move(val), allocator_);
     }
 
+    // REVIEW: returned std::get_if's pointer directly, so on a kind mismatch the
+    //         optional was engaged and held null, while the const overload below
+    //         returns an empty optional. The non-const get_element() relied on empty only
+    //         and dereferenced the null. This non-const overload now matches the const one.
     template<typename Node>
     [[nodiscard]] std::optional<Node*> get_node() noexcept {
-        return std::get_if<Node>(&value_);
+        std::optional<Node*> result;
+        if (auto* ptr = std::get_if<Node>(&value_)) {
+            result = ptr;
+        }
+        return result;
     }
 
     template<typename Node>
@@ -591,9 +682,12 @@ public:
 
     // Comment operations
     [[nodiscard]] std::optional<typename node_traits::string_type> comment() const {
-        // TODO: Return the comment content if the node is a comment node, otherwise return std::nullopt.
-        if (const auto* comment = get_node<comment_node_type>()) {
-            return comment->content();
+        // REVIEW: same defect as text_value(): 'const auto*' cannot bind the optional
+        //         that get_node() returns. The TODO that stood here described what this
+        //         function already does, so it is removed.
+        const auto comment = get_node<comment_node_type>();
+        if (comment) {
+            return (*comment)->content();
         }
         return std::nullopt;
     }
@@ -614,32 +708,11 @@ private:
     //       If no exceptions, the return type will be an expected<T, E> type, otherwise it will be T, in this case, void.
 
     
-    [[nodiscard]] consteval node_kind get_expected_node_kind() const noexcept {
-        if (std::holds_alternative<std::monostate>(value_)) {
-            if (!members_.empty()) {
-                return node_kind::mapping;
-            }
-            if (!name_.empty() || !attributes_.empty()) {
-                return node_kind::element;
-            }
-            return node_kind::null;
-        }
-        if (std::holds_alternative<text_node_type>(value_)) {
-            return node_kind::text;
-        }
-        if (std::holds_alternative<attribute_node_type>(value_)) {
-            return node_kind::attribute;
-        }
-        if (std::holds_alternative<comment_node_type>(value_)) {
-            return node_kind::comment;
-        }
-        if (std::holds_alternative<typename node_traits::sequence_type>(value_)) {
-            return node_kind::sequence;
-        }
-        return node_kind::null;
-    }
- 
-    node_kind get_node_kind(const node_variant<CharT, Traits, Allocator>& value) noexcept {
+    // REVIEW: removed get_expected_node_kind(). It was consteval but read value_,
+    //         members_, name_ and attributes_, which are runtime state, so it could
+    //         never be called, and nothing used it. Its body duplicated get_node_kind()
+    //         below, which is now const so that the new public kind() can call it.
+    [[nodiscard]] node_kind get_node_kind(const node_variant<CharT, Traits, Allocator>& value) const noexcept {
         
         if (std::holds_alternative<std::monostate>(value)) {
             if (!members_.empty()) {
@@ -700,18 +773,27 @@ private:
 // This deduces a basic_object_type from the passed (or default) allocator, and the character type from the string type.
 // This constructor permits the source string and basic_object to use independent allocators.
 
+// REVIEW: the two guides below named std::allocator_traits<Allocator>::value_type.
+//         For ndof::basic_object{node_kind::text} the compiler tries Allocator =
+//         node_kind in the first guide, and Clang 19 substitutes into the guide before
+//         it checks the allocator_like constraint, so std::allocator_traits<node_kind>
+//         was instantiated and failed hard. 
+//         Allocator::value_type is the same type for every allocator, and for anything
+//         else it simply rules this guide out, so the compiler goes on to the
+//         constructor that does match.
+
 template<allocator_like Allocator>
 basic_object(const Allocator&)
     -> basic_object<
-        typename std::allocator_traits<Allocator>::value_type,
-        default_char_traits_t<typename std::allocator_traits<Allocator>::value_type>,
+        typename Allocator::value_type,
+        default_char_traits_t<typename Allocator::value_type>,
         Allocator>;
 
 template<allocator_like Allocator>
 basic_object(node_kind, const Allocator&)
     -> basic_object<
-        typename std::allocator_traits<Allocator>::value_type,
-        default_char_traits_t<typename std::allocator_traits<Allocator>::value_type>,
+        typename Allocator::value_type,
+        default_char_traits_t<typename Allocator::value_type>,
         Allocator>;
 
 template<typename CharT, typename CharTraits, allocator_like SourceAllocator>
@@ -728,9 +810,13 @@ basic_object(
 
 
 // Type aliases
-using object  = basic_object<char,    rebound_default_allocator_t<char>>;
-using wobject = basic_object<wchar_t, rebound_default_allocator_t<wchar_t>>;
+// REVIEW: both aliases passed the allocator as the second template argument, which
+//         is the character traits, so neither could be instantiated. The traits are
+//         now named and the allocator sits in the third position.
+using object  = basic_object<char,    default_char_traits_t<char>,    rebound_default_allocator_t<char>>;
+using wobject = basic_object<wchar_t, default_char_traits_t<wchar_t>, rebound_default_allocator_t<wchar_t>>;
 
-};
+// REVIEW: the namespace was closed with "};"; the stray semicolon is removed.
+} // namespace ndof
 
 #endif // NDOF_CORE_OBJECT_HPP

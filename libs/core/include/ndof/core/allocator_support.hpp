@@ -22,8 +22,16 @@
 namespace ndof {
 
 
+// REVIEW: added the first requirement. Without it, testing a type that is not an
+//         allocator (for example node_kind, which class template argument deduction
+//         tries for ndof::basic_object{node_kind::text}) instantiated
+//         std::allocator_traits for that type, and that is a hard compile error, not
+//         a quiet "false". Requirements are checked in order, so naming
+//         Allocator::value_type first makes the concept fail cleanly before the
+//         traits are touched.
 template<typename Allocator>
 concept has_allocator_definitions = requires {
+    typename Allocator::value_type;
     typename std::allocator_traits<Allocator>::value_type;
     typename std::allocator_traits<Allocator>::pointer;
     typename std::allocator_traits<Allocator>::const_pointer;

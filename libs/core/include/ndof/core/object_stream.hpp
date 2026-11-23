@@ -14,8 +14,12 @@ namespace ndof {
         public std::basic_iostream<CharT, std::char_traits<CharT>> {
     public:
         using allocator_type = Allocator;
-        using object_type = basic_object<CharT, allocator_type>;
+        // REVIEW: object_type was basic_object<CharT, allocator_type>, which passes the
+        //         allocator as the character traits and could not be instantiated. It
+        //         now names the traits and uses char_allocator, so that alias moved up
+        //         one line to be declared first.
         using char_allocator = typename std::allocator_traits<allocator_type>::template rebind_alloc<CharT>;
+        using object_type = basic_object<CharT, std::char_traits<CharT>, char_allocator>;
         using allocated_string = std::basic_string<CharT, std::char_traits<CharT>, char_allocator>;
 
         explicit basic_object_iostream(const object_type& object, const allocator_type& allocator = allocator_type())
